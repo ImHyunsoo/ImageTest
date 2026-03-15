@@ -1,14 +1,17 @@
 """
 demo.py — 고객 제안용 데모
 
-게이지 / 팝업 / 텔테일 카테고리별로 이미지 비교를 시연하고
-HTML 리포트를 생성합니다.
+Tesla / Hyundai / Kia 차세대 클러스터별로
+게이지·팝업·텔테일 비교를 시연하고 HTML 리포트를 생성합니다.
 
 실행:
-  python demo.py
+  python demo.py                   # ACTIVE_BRAND 에 설정된 브랜드 테스트
+  python demo.py --brand hyundai   # 현대 클러스터만 테스트
+  python demo.py --brand all       # 전체 브랜드 테스트
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import math
 from pathlib import Path
@@ -19,11 +22,21 @@ from PIL import Image, ImageDraw, ImageFont
 from image_compare import ImageComparator, ROI, CompareResult
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ★ 브랜드 설정 — 여기서 테스트할 브랜드를 선택하세요
+#   'tesla'   : 테슬라 클러스터만 테스트
+#   'hyundai' : 현대 (IONIQ 스타일) 클러스터만 테스트
+#   'kia'     : 기아 (EV6 스타일) 클러스터만 테스트
+#   'all'     : 전체 브랜드 테스트 (기본값)
+# ─────────────────────────────────────────────────────────────────────────────
+ACTIVE_BRAND = 'all'
+
 OUT = Path('demo_output')
 OUT.mkdir(exist_ok=True)
 
 FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+
+W, H = 480, 270  # 클러스터 이미지 크기 (16:9)
 
 
 def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -37,7 +50,7 @@ def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 텔테일 / 팝업 정의
+# 텔테일 / 팝업 정의 (공통)
 # ─────────────────────────────────────────────────────────────────────────────
 
 TELLTALE_DEFS = [
@@ -54,187 +67,451 @@ TELLTALE_DEFS = [
 POPUP_COLORS = {
     'warning': (255, 165,   0),
     'error':   (255,  50,  50),
-    'info':    ( 50, 150, 255),
+    'info':    ( 50, 165, 255),
 }
 
 ALL_OFF = {k: False for k, *_ in TELLTALE_DEFS}
 
+GEAR_LABELS = {'D': 'DRIVE', 'R': 'REVERSE', 'N': 'NEUTRAL', 'P': 'PARK'}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 브랜드별 표준 ROI 세트 (480×270 기준)
+#
+# 텔테일·속도·배터리·팝업 4개 영역을 모든 테스트에 자동 적용합니다.
+# 실제 클러스터 해상도에 맞게 좌표만 조정하면 됩니다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+BRAND_ROIS = {
+    'tesla': [
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='속도 표시',       x=158, y=52,  width=164, height=120, strict=True),
+        ROI(name='배터리/주행거리', x=322, y=52,  width=155, height=140, strict=False),
+        ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
+    ],
+    'hyundai': [
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='속도 표시',       x=155, y=52,  width=168, height=118, strict=True),
+        ROI(name='배터리/주행거리', x=318, y=52,  width=160, height=140, strict=False),
+        ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
+    ],
+    'kia': [
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='속도 표시',       x=30,  y=58,  width=178, height=110, strict=True),
+        ROI(name='배터리/주행거리', x=240, y=52,  width=238, height=140, strict=False),
+        ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
+    ],
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 브랜드별 스타일 설정
+# ─────────────────────────────────────────────────────────────────────────────
+
+BRAND_STYLE = {
+    'tesla': {
+        'bg':           (  8,   8,   8),
+        'accent':       (  0, 190, 110),
+        'sep_line':     ( 38,  38,  52),
+        'inactive_bg':  ( 18,  18,  26),
+        'inactive_fg':  ( 48,  48,  60),
+        'label':        'Tesla  Model S/3/X/Y',
+    },
+    'hyundai': {
+        'bg':           ( 10,  20,  37),
+        'accent':       (  0, 170, 210),   # Hyundai teal
+        'sep_line':     (  0,  60,  90),
+        'inactive_bg':  ( 10,  26,  48),
+        'inactive_fg':  ( 30,  70, 100),
+        'label':        'Hyundai  IONIQ 5 / IONIQ 6',
+    },
+    'kia': {
+        'bg':           ( 13,  12,  14),
+        'accent':       (204,  14,  42),   # Kia red
+        'sep_line':     ( 60,  14,  22),
+        'inactive_bg':  ( 20,  14,  16),
+        'inactive_fg':  ( 60,  32,  36),
+        'label':        'Kia  EV6 / EV9',
+    },
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 공통 드로잉 유틸
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_telltale_icon(draw: ImageDraw.Draw, key: str, cx: int, cy: int, ink):
     if key == 'engine':
-        draw.rectangle([cx - 7, cy - 3, cx + 7, cy + 6], fill=ink)
+        draw.rectangle([cx - 7, cy - 3, cx + 7, cy + 5], fill=ink)
         draw.rectangle([cx - 5, cy - 6, cx - 1, cy - 3], fill=ink)
         draw.rectangle([cx + 1, cy - 6, cx + 5, cy - 3], fill=ink)
-        draw.rectangle([cx - 10, cy,     cx - 7, cy + 4], fill=ink)
+        draw.rectangle([cx - 10, cy,     cx - 7, cy + 3], fill=ink)
     elif key == 'fuel':
-        draw.rectangle([cx - 7, cy - 5, cx + 3, cy + 6], fill=ink)
-        draw.rectangle([cx + 3, cy - 5, cx + 8, cy - 1], fill=ink)
-        draw.line([(cx + 8, cy - 5), (cx + 8, cy + 3)], fill=ink, width=2)
-        draw.ellipse([cx + 5, cy + 1, cx + 10, cy + 6], fill=ink)
+        draw.rectangle([cx - 6, cy - 5, cx + 3, cy + 5], fill=ink)
+        draw.rectangle([cx + 3, cy - 5, cx + 7, cy - 1], fill=ink)
+        draw.line([(cx + 7, cy - 5), (cx + 7, cy + 2)], fill=ink, width=2)
+        draw.ellipse([cx + 4, cy + 1, cx + 9, cy + 5], fill=ink)
     elif key == 'oil':
-        draw.polygon([(cx, cy - 7), (cx - 5, cy + 2), (cx + 5, cy + 2)], fill=ink)
-        draw.ellipse([cx - 5, cy - 1, cx + 5, cy + 6], fill=ink)
+        draw.polygon([(cx, cy - 7), (cx - 5, cy + 1), (cx + 5, cy + 1)], fill=ink)
+        draw.ellipse([cx - 5, cy - 1, cx + 5, cy + 5], fill=ink)
     elif key == 'battery':
-        draw.rectangle([cx - 8, cy - 3, cx + 7, cy + 5], fill=ink)
-        draw.rectangle([cx - 6, cy - 5, cx - 2, cy - 3], fill=ink)
-        draw.rectangle([cx + 2, cy - 5, cx + 5, cy - 3], fill=ink)
-        light = (220, 220, 220) if isinstance(ink, tuple) and ink[0] > 100 else (80, 80, 80)
-        draw.line([(cx + 3, cy - 1), (cx + 3, cy + 3)], fill=light, width=1)
-        draw.line([(cx + 1, cy + 1), (cx + 5, cy + 1)], fill=light, width=1)
+        draw.rectangle([cx - 7, cy - 3, cx + 6, cy + 4], fill=ink)
+        draw.rectangle([cx - 5, cy - 5, cx - 1, cy - 3], fill=ink)
+        draw.rectangle([cx + 1, cy - 5, cx + 4, cy - 3], fill=ink)
+        light = (220, 220, 220) if isinstance(ink, tuple) and sum(ink) > 300 else (70, 70, 80)
+        draw.line([(cx + 2, cy - 1), (cx + 2, cy + 2)], fill=light, width=1)
+        draw.line([(cx,     cy + 1), (cx + 4, cy + 1)], fill=light, width=1)
     elif key == 'abs':
-        draw.text((cx - 9, cy - 5), 'ABS', fill=ink, font=_font(FONT_BOLD, 10))
+        draw.text((cx - 9, cy - 5), 'ABS', fill=ink, font=_font(FONT_BOLD, 9))
     elif key == 'door':
-        draw.rectangle([cx - 8, cy - 5, cx + 8, cy + 5], outline=ink, width=2)
-        draw.arc([cx - 1, cy - 5, cx + 14, cy + 8], start=270, end=360, fill=ink, width=2)
+        draw.rectangle([cx - 8, cy - 5, cx + 8, cy + 4], outline=ink, width=2)
+        draw.arc([cx - 1, cy - 5, cx + 13, cy + 7], start=270, end=360, fill=ink, width=2)
     elif key == 'seatbelt':
         draw.ellipse([cx - 4, cy - 7, cx + 4, cy - 1], fill=ink)
-        draw.line([(cx, cy - 1), (cx + 6, cy + 6)], fill=ink, width=2)
-        draw.line([(cx, cy + 2), (cx, cy + 6)],     fill=ink, width=2)
-        draw.line([(cx - 5, cy + 6), (cx + 6, cy + 6)], fill=ink, width=2)
+        draw.line([(cx, cy - 1), (cx + 6, cy + 5)],    fill=ink, width=2)
+        draw.line([(cx, cy + 2), (cx, cy + 5)],         fill=ink, width=2)
+        draw.line([(cx - 5, cy + 5), (cx + 6, cy + 5)], fill=ink, width=2)
     elif key == 'temp':
-        draw.line([(cx, cy - 7), (cx, cy + 2)], fill=ink, width=2)
-        draw.ellipse([cx - 4, cy + 1, cx + 4, cy + 7], fill=ink)
-        for ty in (cy - 5, cy - 2, cy + 1):
+        draw.line([(cx, cy - 7), (cx, cy + 1)], fill=ink, width=2)
+        draw.ellipse([cx - 4, cy, cx + 4, cy + 6], fill=ink)
+        for ty in (cy - 5, cy - 2):
             draw.line([(cx, ty), (cx + 4, ty)], fill=ink, width=1)
 
 
-def _draw_telltales(draw: ImageDraw.Draw, telltales: dict):
+def _draw_telltales(draw: ImageDraw.Draw, telltales: dict,
+                    inactive_bg=(18, 18, 26), inactive_fg=(48, 48, 60)):
+    """상단 텔테일 바 (아이콘 + 라벨)"""
     n      = len(TELLTALE_DEFS)
-    cell_w = 400 // n
-    y_top  = 253
-    icon_h = 32
-    f_lbl  = _font(FONT_REG, 9)
+    cell_w = W // n  # 60px
+    f_lbl  = _font(FONT_REG, 8)
 
     for i, (key, label, color) in enumerate(TELLTALE_DEFS):
         active  = telltales.get(key, False)
         icon_cx = i * cell_w + cell_w // 2
-        x0, x1  = icon_cx - 19, icon_cx + 19
-        y0, y1  = y_top, y_top + icon_h
-        bg  = color         if active else (38, 38, 52)
-        ink = (20, 20, 20)  if active else (75, 75, 88)
+        x0, x1  = i * cell_w + 2, (i + 1) * cell_w - 2
+        y0, y1  = 2, 44
+
+        bg  = color        if active else inactive_bg
+        ink = (12, 12, 18) if active else inactive_fg
 
         draw.rounded_rectangle([x0, y0, x1, y1], radius=4, fill=bg)
-        _draw_telltale_icon(draw, key, icon_cx, y_top + 14, ink)
+        _draw_telltale_icon(draw, key, icon_cx, 20, ink)
 
         lb = draw.textbbox((0, 0), label, font=f_lbl)
         lw = lb[2] - lb[0]
-        draw.text((icon_cx - lw // 2, y_top + icon_h + 2), label,
-                  fill=(20, 20, 20) if active else (60, 62, 72), font=f_lbl)
+        draw.text((icon_cx - lw // 2, 33), label,
+                  fill=(12, 12, 18) if active else inactive_fg, font=f_lbl)
 
 
 def _draw_popup(draw: ImageDraw.Draw, popup: dict):
+    """하단 팝업 카드"""
     color = POPUP_COLORS.get(popup.get('type', 'warning'), POPUP_COLORS['warning'])
-    px0, py0 = 78, 178
-    px1, py1 = 322, 248
+    px0, py0 = 10, 213
+    px1, py1 = W - 10, 263
 
-    draw.rectangle([px0, py0, px1, py1], fill=(10, 10, 18))
-    draw.rectangle([px0, py0, px1, py1], outline=color, width=2)
-    draw.rectangle([px0, py0, px0 + 5, py1], fill=color)
+    draw.rounded_rectangle([px0, py0, px1, py1], radius=6, fill=(14, 14, 22))
+    draw.rounded_rectangle([px0, py0, px1, py1], radius=6, outline=color, width=1)
+    draw.rounded_rectangle([px0, py0, px0 + 5, py1], radius=3, fill=color)
 
-    icx, icy = px0 + 24, (py0 + py1) // 2
+    icx, icy = px0 + 26, (py0 + py1) // 2
     t = popup.get('type', 'warning')
     if t == 'error':
-        draw.ellipse([icx - 11, icy - 11, icx + 11, icy + 11], fill=color)
-        draw.text((icx - 4, icy - 9), '!', fill=(10, 10, 18), font=_font(FONT_BOLD, 15))
+        draw.ellipse([icx - 10, icy - 10, icx + 10, icy + 10], fill=color)
+        draw.text((icx - 4, icy - 9), '!', fill=(12, 12, 20), font=_font(FONT_BOLD, 14))
     elif t == 'info':
-        draw.ellipse([icx - 11, icy - 11, icx + 11, icy + 11], fill=color)
-        draw.text((icx - 3, icy - 9), 'i', fill=(10, 10, 18), font=_font(FONT_BOLD, 15))
+        draw.ellipse([icx - 10, icy - 10, icx + 10, icy + 10], fill=color)
+        draw.text((icx - 3, icy - 9), 'i', fill=(12, 12, 20), font=_font(FONT_BOLD, 14))
     else:
-        draw.polygon([(icx, icy - 12), (icx - 12, icy + 8), (icx + 12, icy + 8)], fill=color)
-        draw.text((icx - 3, icy - 4), '!', fill=(10, 10, 18), font=_font(FONT_BOLD, 13))
+        draw.polygon([(icx, icy - 11), (icx - 11, icy + 8), (icx + 11, icy + 8)], fill=color)
+        draw.text((icx - 3, icy - 3), '!', fill=(12, 12, 20), font=_font(FONT_BOLD, 12))
 
-    f_title = _font(FONT_BOLD, 14)
-    draw.text((px0 + 44, py0 + 11), popup.get('title', ''), fill=color, font=f_title)
+    draw.text((px0 + 46, py0 + 11), popup.get('title', ''),  fill=color,
+              font=_font(FONT_BOLD, 13))
     if popup.get('body'):
-        draw.text((px0 + 44, py0 + 30), popup['body'], fill=(175, 175, 195),
-                  font=_font(FONT_REG, 12))
-    draw.text((px0 + 44, py0 + 48), '확인 버튼을 누르세요', fill=(90, 92, 108),
-              font=_font(FONT_REG, 10))
+        draw.text((px0 + 46, py0 + 30), popup['body'], fill=(155, 155, 175),
+                  font=_font(FONT_REG, 11))
+
+
+def _draw_prnd(draw: ImageDraw.Draw, gear: str, cx: int, cy: int, active_color, inactive_color):
+    """P R N D 가로 선택 표시 (현대·기아 스타일)"""
+    prnd    = ['P', 'R', 'N', 'D']
+    f_prnd  = _font(FONT_BOLD, 20)
+    spacing = 28
+    total   = len(prnd) * spacing
+    sx      = cx - total // 2 + 4
+
+    for i, g in enumerate(prnd):
+        gx = sx + i * spacing
+        is_active = (g == gear)
+        if is_active:
+            draw.rounded_rectangle([gx - 11, cy - 13, gx + 11, cy + 11],
+                                   radius=3, fill=active_color)
+            txt_c = (10, 10, 16)
+        else:
+            txt_c = inactive_color
+        b = draw.textbbox((0, 0), g, font=f_prnd)
+        tw = b[2] - b[0]
+        draw.text((gx - tw // 2, cy - 11), g, fill=txt_c, font=f_prnd)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 클러스터 이미지 생성 (400×300)
+# Tesla 클러스터 (Model S/3/X/Y 스타일)
 # ─────────────────────────────────────────────────────────────────────────────
+
+_TESLA_GEAR_COLORS = {
+    'D': (  0, 200, 120),
+    'R': (220,  70,  70),
+    'N': (200, 175,   0),
+    'P': ( 90,  90, 115),
+}
+
+
+def _make_tesla_cluster(
+    speed: int, gear: str, battery_pct: int, range_km: int,
+    telltales: dict, popup: Optional[dict],
+) -> Image.Image:
+    sty  = BRAND_STYLE['tesla']
+    img  = Image.new('RGB', (W, H), sty['bg'])
+    draw = ImageDraw.Draw(img)
+
+    _draw_telltales(draw, telltales, sty['inactive_bg'], sty['inactive_fg'])
+    draw.line([(0, 47), (W, 47)], fill=sty['sep_line'], width=1)
+
+    # ── 기어 (좌, x=0..160) ─────────────────────────────────
+    gc    = _TESLA_GEAR_COLORS.get(gear, (120, 120, 140))
+    f_g   = _font(FONT_BOLD, 70)
+    f_glb = _font(FONT_REG, 11)
+    gb    = draw.textbbox((0, 0), gear, font=f_g)
+    draw.text((80 - (gb[2] - gb[0]) // 2, 85), gear, fill=gc, font=f_g)
+    mode_lbl = GEAR_LABELS.get(gear, '')
+    mb = draw.textbbox((0, 0), mode_lbl, font=f_glb)
+    draw.text((80 - (mb[2] - mb[0]) // 2, 165), mode_lbl, fill=(70, 70, 90), font=f_glb)
+
+    # ── 속도 (중앙, x=160..320) ──────────────────────────────
+    f_spd  = _font(FONT_BOLD, 80)
+    f_unit = _font(FONT_REG,  16)
+    cx_spd = 240
+    spd_txt = str(speed)
+    sb = draw.textbbox((0, 0), spd_txt, font=f_spd)
+    draw.text((cx_spd - (sb[2] - sb[0]) // 2, 80), spd_txt, fill=(255, 255, 255), font=f_spd)
+    ub = draw.textbbox((0, 0), 'km/h', font=f_unit)
+    draw.text((cx_spd - (ub[2] - ub[0]) // 2, 158), 'km/h', fill=(110, 110, 135), font=f_unit)
+    for dot_x in (175, 200, 225, 255, 280, 305):
+        active_dot = dot_x <= (175 + int((speed / 200) * 130))
+        draw.ellipse([dot_x - 2, 183, dot_x + 2, 187],
+                     fill=(0, 190, 110) if active_dot else (30, 30, 42))
+
+    # ── 배터리 / 주행거리 (우, x=320..480) ───────────────────
+    rx      = 400
+    f_range = _font(FONT_BOLD, 22)
+    f_pct   = _font(FONT_REG,  13)
+    f_small = _font(FONT_REG,  10)
+    rng_txt = f'{range_km} km'
+    rnb = draw.textbbox((0, 0), rng_txt, font=f_range)
+    draw.text((rx - (rnb[2] - rnb[0]) // 2, 72), rng_txt, fill=(220, 220, 235), font=f_range)
+    draw.text((330, 108), '배터리', fill=(60, 60, 78), font=f_small)
+    bx0, by0, bx1, by1 = 330, 122, 468, 134
+    fill_x1  = bx0 + max(6, int((bx1 - bx0) * battery_pct / 100))
+    bar_color = (0, 185, 108) if battery_pct > 30 else ((215, 158, 0) if battery_pct > 15 else (215, 55, 55))
+    draw.rounded_rectangle([bx0, by0, bx1, by1],           radius=3, fill=(32, 32, 44))
+    draw.rounded_rectangle([bx0, by0, fill_x1, by1],       radius=3, fill=bar_color)
+    pct_txt = f'{battery_pct}%'
+    pb = draw.textbbox((0, 0), pct_txt, font=f_pct)
+    draw.text((rx - (pb[2] - pb[0]) // 2, 140), pct_txt, fill=(110, 110, 135), font=f_pct)
+
+    if popup:
+        _draw_popup(draw, popup)
+    return img
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hyundai 클러스터 (IONIQ 5 / IONIQ 6 스타일)
+#
+# Layout:
+#   상단 텔테일 바 | P·R·N·D 선택(좌) + 속도(중앙) | 주행거리/배터리(우) | 팝업(하단)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_hyundai_cluster(
+    speed: int, gear: str, battery_pct: int, range_km: int,
+    telltales: dict, popup: Optional[dict],
+) -> Image.Image:
+    sty = BRAND_STYLE['hyundai']
+    acc = sty['accent']  # (0, 170, 210) teal
+
+    img  = Image.new('RGB', (W, H), sty['bg'])
+    draw = ImageDraw.Draw(img)
+
+    _draw_telltales(draw, telltales, sty['inactive_bg'], sty['inactive_fg'])
+    draw.line([(0, 47), (W, 47)], fill=sty['sep_line'], width=1)
+
+    # ── P·R·N·D 선택 (좌 패널 상단) ─────────────────────────
+    _draw_prnd(draw, gear, cx=80, cy=65, active_color=acc, inactive_color=(30, 70, 100))
+
+    # ── 속도 (중앙) ──────────────────────────────────────────
+    f_spd  = _font(FONT_BOLD, 80)
+    f_unit = _font(FONT_REG,  14)
+    cx_spd = 240
+    spd_txt = str(speed)
+    sb = draw.textbbox((0, 0), spd_txt, font=f_spd)
+    draw.text((cx_spd - (sb[2] - sb[0]) // 2, 75), spd_txt, fill=(255, 255, 255), font=f_spd)
+    ub = draw.textbbox((0, 0), 'km/h', font=f_unit)
+    draw.text((cx_spd - (ub[2] - ub[0]) // 2, 158), 'km/h', fill=(40, 110, 140), font=f_unit)
+
+    # 속도 아크 (현대 스타일 — 얇은 teal 반원 아래)
+    ar = 52
+    arc_box = [cx_spd - ar, 175, cx_spd + ar, 175 + ar * 2]
+    draw.arc(arc_box, start=190, end=350, fill=(15, 50, 70), width=3)
+    end_angle = 190 + int((speed / 200) * 160)
+    if speed > 0:
+        draw.arc(arc_box, start=190, end=min(end_angle, 350), fill=acc, width=3)
+
+    # ── 주행거리 / 배터리 (우 패널) ─────────────────────────
+    rx      = 405
+    f_range = _font(FONT_BOLD, 20)
+    f_pct   = _font(FONT_REG,  12)
+    f_small = _font(FONT_REG,  10)
+
+    rng_txt = f'{range_km} km'
+    rnb = draw.textbbox((0, 0), rng_txt, font=f_range)
+    draw.text((rx - (rnb[2] - rnb[0]) // 2, 75), rng_txt, fill=(210, 235, 245), font=f_range)
+
+    draw.text((332, 105), '예상 주행거리', fill=(25, 70, 100), font=f_small)
+
+    # 배터리 바
+    bx0, by0, bx1, by1 = 332, 122, 468, 133
+    fill_x1  = bx0 + max(5, int((bx1 - bx0) * battery_pct / 100))
+    bar_color = acc if battery_pct > 30 else ((200, 150, 0) if battery_pct > 15 else (210, 50, 50))
+    draw.rounded_rectangle([bx0, by0, bx1, by1],     radius=3, fill=(15, 40, 65))
+    draw.rounded_rectangle([bx0, by0, fill_x1, by1], radius=3, fill=bar_color)
+
+    pct_txt = f'{battery_pct}%'
+    pb = draw.textbbox((0, 0), pct_txt, font=f_pct)
+    draw.text((rx - (pb[2] - pb[0]) // 2, 140), pct_txt, fill=(40, 110, 140), font=f_pct)
+
+    # 우 패널 구분선 (현대 특유의 얇은 수직 장식선)
+    draw.line([(320, 52), (320, 195)], fill=(0, 45, 70), width=1)
+
+    if popup:
+        _draw_popup(draw, popup)
+    return img
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kia 클러스터 (EV6 / EV9 스타일)
+#
+# Layout (비대칭):
+#   상단 텔테일 바 | 속도 + P·R·N·D(좌측) | 에너지/주행거리(우측) | 팝업(하단)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_kia_cluster(
+    speed: int, gear: str, battery_pct: int, range_km: int,
+    telltales: dict, popup: Optional[dict],
+) -> Image.Image:
+    sty = BRAND_STYLE['kia']
+    acc = sty['accent']  # (204, 14, 42) Kia red
+
+    img  = Image.new('RGB', (W, H), sty['bg'])
+    draw = ImageDraw.Draw(img)
+
+    _draw_telltales(draw, telltales, sty['inactive_bg'], sty['inactive_fg'])
+    draw.line([(0, 47), (W, 47)], fill=sty['sep_line'], width=1)
+
+    # ── 속도 (좌측 중앙, cx=120) ────────────────────────────
+    f_spd  = _font(FONT_BOLD, 76)
+    f_unit = _font(FONT_REG,  13)
+    cx_spd = 120
+    spd_txt = str(speed)
+    sb = draw.textbbox((0, 0), spd_txt, font=f_spd)
+    draw.text((cx_spd - (sb[2] - sb[0]) // 2, 78), spd_txt, fill=(255, 255, 255), font=f_spd)
+    ub = draw.textbbox((0, 0), 'km/h', font=f_unit)
+    draw.text((cx_spd - (ub[2] - ub[0]) // 2, 161), 'km/h', fill=(80, 40, 46), font=f_unit)
+
+    # ── P·R·N·D 선택 (속도 아래) ────────────────────────────
+    _draw_prnd(draw, gear, cx=120, cy=184, active_color=acc, inactive_color=(60, 32, 36))
+
+    # 속도 영역 우측 경계선 (기아 스타일 분리선)
+    draw.line([(215, 52), (215, 205)], fill=(50, 18, 22), width=1)
+
+    # ── 에너지 게이지 / 주행거리 (우 패널, x=225..470) ──────
+    rx       = 350
+    f_range  = _font(FONT_BOLD, 22)
+    f_pct    = _font(FONT_REG,  12)
+    f_label  = _font(FONT_REG,  10)
+    f_small  = _font(FONT_REG,   9)
+
+    # 주행거리
+    rng_txt = f'{range_km} km'
+    rnb = draw.textbbox((0, 0), rng_txt, font=f_range)
+    draw.text((rx - (rnb[2] - rnb[0]) // 2, 72), rng_txt, fill=(230, 220, 222), font=f_range)
+
+    draw.text((228, 100), '주행가능거리', fill=(55, 28, 32), font=f_label)
+
+    # 배터리 수직 바 (기아 스타일)
+    vbx0, vby0, vbx1, vby1 = 228, 115, 268, 175
+    fill_y0 = vby1 - max(4, int((vby1 - vby0) * battery_pct / 100))
+    bar_color = acc if battery_pct > 30 else ((200, 140, 0) if battery_pct > 15 else (180, 40, 40))
+    draw.rounded_rectangle([vbx0, vby0, vbx1, vby1],     radius=4, fill=(30, 18, 20))
+    draw.rounded_rectangle([vbx0, fill_y0, vbx1, vby1],  radius=4, fill=bar_color)
+
+    pct_txt = f'{battery_pct}%'
+    pb = draw.textbbox((0, 0), pct_txt, font=f_pct)
+    draw.text((248 - (pb[2] - pb[0]) // 2, 178), pct_txt, fill=(80, 40, 46), font=f_pct)
+
+    # 속도 스케일 바 (우 패널 오른쪽)
+    draw.text((290, 100), '속도 범위', fill=(55, 28, 32), font=f_label)
+    sbx0, sby0, sbx1, sby1 = 290, 115, 468, 125
+    spd_fill = sbx0 + max(4, int((sbx1 - sbx0) * min(speed, 200) / 200))
+    draw.rounded_rectangle([sbx0, sby0, sbx1, sby1],          radius=3, fill=(30, 18, 20))
+    draw.rounded_rectangle([sbx0, sby0, spd_fill, sby1],      radius=3, fill=acc)
+
+    draw.text((290, 130), '배터리 상태', fill=(55, 28, 32), font=f_label)
+    for seg in range(10):
+        sx0 = 290 + seg * 18
+        sx1 = sx0 + 14
+        filled = (seg < battery_pct // 10)
+        seg_color = bar_color if filled else (30, 18, 20)
+        draw.rounded_rectangle([sx0, 143, sx1, 158], radius=2, fill=seg_color)
+
+    spd_lbl = f'{speed} km/h'
+    sl = draw.textbbox((0, 0), spd_lbl, font=f_small)
+    draw.text((468 - (sl[2] - sl[0]), 128), spd_lbl, fill=(60, 30, 34), font=f_small)
+
+    if popup:
+        _draw_popup(draw, popup)
+    return img
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 공통 인터페이스
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BRAND_MAKE = {
+    'tesla':   _make_tesla_cluster,
+    'hyundai': _make_hyundai_cluster,
+    'kia':     _make_kia_cluster,
+}
+
 
 def make_cluster_image(
+    brand: str,
     speed: int = 80,
-    gauge_color: tuple = (0, 200, 100),
+    gear: str = 'D',
+    battery_pct: int = 80,
+    range_km: int = 320,
     telltales: Optional[dict] = None,
     popup: Optional[dict] = None,
 ) -> Image.Image:
     if telltales is None:
         telltales = ALL_OFF.copy()
+    return _BRAND_MAKE[brand](speed, gear, battery_pct, range_km, telltales, popup)
 
-    W, H = 400, 300
-    img  = Image.new('RGB', (W, H), (18, 18, 30))
-    draw = ImageDraw.Draw(img)
 
-    cx, cy, R = 200, 138, 100
-
-    # 외곽 링
-    draw.ellipse([cx - R, cy - R, cx + R, cy + R], outline=(80, 80, 120), width=4)
-
-    # 눈금
-    for i in range(25):
-        angle    = math.radians(-150 + i * 12)
-        is_major = (i % 5 == 0)
-        r_inner  = R - (14 if is_major else 7)
-        x0 = cx + r_inner * math.cos(angle)
-        y0 = cy + r_inner * math.sin(angle)
-        x1 = cx + (R - 2) * math.cos(angle)
-        y1 = cy + (R - 2) * math.sin(angle)
-        draw.line([(x0, y0), (x1, y1)],
-                  fill=(200, 200, 220) if is_major else (90, 90, 110),
-                  width=2 if is_major else 1)
-
-    # 속도 호
-    arc_end = int(-150 + (speed / 200) * 300)
-    for deg in range(-150, arc_end):
-        rad = math.radians(deg)
-        x0  = cx + (R - 22) * math.cos(rad)
-        y0  = cy + (R - 22) * math.sin(rad)
-        x1  = cx + (R - 10) * math.cos(rad)
-        y1  = cy + (R - 10) * math.sin(rad)
-        draw.line([(x0, y0), (x1, y1)], fill=gauge_color, width=2)
-
-    # 바늘
-    needle_rad = math.radians(-150 + (speed / 200) * 300)
-    nx = cx + (R - 28) * math.cos(needle_rad)
-    ny = cy + (R - 28) * math.sin(needle_rad)
-    draw.line([(cx, cy), (int(nx), int(ny))], fill=(255, 255, 255), width=3)
-    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=(200, 200, 220))
-
-    # 속도 숫자
-    f_big  = _font(FONT_BOLD, 48)
-    f_unit = _font(FONT_REG,  14)
-    txt    = str(speed)
-    bbox   = draw.textbbox((0, 0), txt, font=f_big)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((cx - tw // 2, cy - th // 2), txt, fill=(255, 255, 255), font=f_big)
-    draw.text((cx - 14, cy + th // 2 + 5), 'km/h', fill=(125, 125, 160), font=f_unit)
-
-    # 속도 범위 표시 (0 / 100 / 200)
-    f_range = _font(FONT_REG, 10)
-    for spd, deg in [(0, -150), (100, 0), (200, 150)]:
-        a  = math.radians(deg)
-        rx = cx + (R - 28) * math.cos(a)
-        ry = cy + (R - 28) * math.sin(a)
-        lb = draw.textbbox((0, 0), str(spd), font=f_range)
-        draw.text((rx - (lb[2] - lb[0]) // 2, ry - (lb[3] - lb[1]) // 2),
-                  str(spd), fill=(120, 120, 145), font=f_range)
-
-    # 텔테일 표시줄
-    _draw_telltales(draw, telltales)
-
-    # 팝업 오버레이
-    if popup:
-        _draw_popup(draw, popup)
-
-    return img
+def compare_cluster(cmp: ImageComparator, brand: str,
+                    base: str, curr: str, diff: str) -> CompareResult:
+    """브랜드별 CLUSTER_ROIS 를 자동 적용한 비교"""
+    return cmp.compare(base, curr, diff_output=diff, rois=BRAND_ROIS[brand])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTML 리포트 — 카테고리별 구성
+# HTML 리포트 생성
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _b64(path: str) -> str:
@@ -246,103 +523,110 @@ def _mime(path: str) -> str:
     return 'image/jpeg' if Path(path).suffix.lower() in ('.jpg', '.jpeg') else 'image/png'
 
 
-def build_html_report(categories: list[dict]) -> str:
-    """
-    categories: [
-        {'name': '게이지 테스트', 'icon': '🎯', 'cases': [...]},
-        ...
-    ]
-    """
+def build_html_report(brand_sections: list[dict]) -> str:
     STATUS = {
-        'PASS':         ('✅ PASS',          '#16a34a', '#f0fdf4', '#bbf7d0'),
-        'SIMILAR_PASS': ('⚠️ SIMILAR PASS',  '#b45309', '#fffbeb', '#fde68a'),
-        'FAIL':         ('❌ FAIL',           '#dc2626', '#fef2f2', '#fecaca'),
+        'PASS':         ('✅ PASS',         '#16a34a', '#f0fdf4', '#bbf7d0'),
+        'SIMILAR_PASS': ('⚠️ SIMILAR PASS', '#b45309', '#fffbeb', '#fde68a'),
+        'FAIL':         ('❌ FAIL',          '#dc2626', '#fef2f2', '#fecaca'),
     }
 
-    all_cases  = [c for cat in categories for c in cat['cases']]
-    pass_n     = sum(1 for c in all_cases if c['result'].status == 'PASS')
-    similar_n  = sum(1 for c in all_cases if c['result'].status == 'SIMILAR_PASS')
-    fail_n     = sum(1 for c in all_cases if c['result'].status == 'FAIL')
-    total_n    = len(all_cases)
+    all_cases = [c for bs in brand_sections for cat in bs['categories'] for c in cat['cases']]
+    pass_n    = sum(1 for c in all_cases if c['result'].status == 'PASS')
+    similar_n = sum(1 for c in all_cases if c['result'].status == 'SIMILAR_PASS')
+    fail_n    = sum(1 for c in all_cases if c['result'].status == 'FAIL')
 
     body_html = ''
     case_num  = 0
 
-    for cat in categories:
-        cat_pass  = sum(1 for c in cat['cases'] if c['result'].status == 'PASS')
-        cat_fail  = sum(1 for c in cat['cases'] if c['result'].status == 'FAIL')
-        cat_sim   = sum(1 for c in cat['cases'] if c['result'].status == 'SIMILAR_PASS')
-        cat_total = len(cat['cases'])
+    for bs in brand_sections:
+        brand       = bs['brand']
+        brand_label = BRAND_STYLE[brand]['label']
+        brand_color = {
+            'tesla':   '#00C878',
+            'hyundai': '#00AAD2',
+            'kia':     '#CC0E2A',
+        }[brand]
 
         body_html += f"""
-        <div class="category">
-          <div class="cat-head">
-            <span class="cat-icon">{cat.get('icon', '📋')}</span>
-            <span class="cat-title">{cat['name']}</span>
-            <span class="cat-stats">
-              <span style="color:#16a34a">PASS {cat_pass}</span> &nbsp;
-              <span style="color:#b45309">SIMILAR {cat_sim}</span> &nbsp;
-              <span style="color:#dc2626">FAIL {cat_fail}</span> &nbsp;
-              / {cat_total}
-            </span>
-          </div>
-          <div class="cat-desc">{cat.get('desc', '')}</div>
-          <div class="cards">"""
+        <div class="brand-section">
+          <div class="brand-head" style="border-left:6px solid {brand_color}">
+            <span class="brand-title">{brand_label}</span>
+          </div>"""
 
-        for case in cat['cases']:
-            case_num += 1
-            r: CompareResult = case['result']
-            label, color, bg, border_bg = STATUS.get(r.status, ('?', '#6b7280', '#f9fafb', '#e5e7eb'))
-
-            diff_cell = ''
-            if r.diff_image_path and Path(r.diff_image_path).exists():
-                diff_cell = (
-                    f'<figure><img src="data:image/png;base64,{_b64(r.diff_image_path)}" alt="diff">'
-                    f'<figcaption>Diff<br><small>빨강 = 변경 영역</small></figcaption></figure>'
-                )
-            else:
-                diff_cell = '<figure><div class="no-img">—</div><figcaption>Diff</figcaption></figure>'
-
-            roi_html = ''
-            if r.roi_results:
-                roi_html = '<div class="roi-block"><b>ROI 검사 결과</b><ul>'
-                for rr in r.roi_results:
-                    ok = '✅' if rr.passed else '❌'
-                    roi_html += f'<li>{ok} <b>{rr.name}</b> &nbsp;SSIM: {rr.ssim} &nbsp;Diff: {rr.diff_pct}%</li>'
-                roi_html += '</ul></div>'
-
-            desc_html = case.get('desc', '').replace('\n', '<br>')
+        for cat in bs['categories']:
+            cat_pass = sum(1 for c in cat['cases'] if c['result'].status == 'PASS')
+            cat_fail = sum(1 for c in cat['cases'] if c['result'].status == 'FAIL')
+            cat_sim  = sum(1 for c in cat['cases'] if c['result'].status == 'SIMILAR_PASS')
 
             body_html += f"""
-            <div class="card" style="border-top:4px solid {color}">
-              <div class="card-head" style="background:{border_bg}">
-                <span class="case-n">Case {case_num}</span>
-                <span class="case-name">{case['name'].replace(chr(10), '<br>')}</span>
-                <span class="badge" style="background:{color}">{label}</span>
-              </div>
-              {'<div class="desc">' + desc_html + '</div>' if desc_html else ''}
-              <div class="imgs">
-                <figure>
-                  <img src="data:{_mime(case['baseline'])};base64,{_b64(case['baseline'])}" alt="baseline">
-                  <figcaption>Baseline<br><code>{Path(case['baseline']).name}</code></figcaption>
-                </figure>
-                <figure>
-                  <img src="data:{_mime(case['current'])};base64,{_b64(case['current'])}" alt="current">
-                  <figcaption>Current<br><code>{Path(case['current']).name}</code></figcaption>
-                </figure>
-                {diff_cell}
-              </div>
-              <div class="metrics">
-                <div class="m"><span class="ml">모드</span><span class="mv">{r.mode.upper()}</span></div>
-                <div class="m"><span class="ml">SSIM</span><span class="mv">{r.ssim_score:.4f}</span></div>
-                <div class="m"><span class="ml">Diff</span><span class="mv">{r.diff_pct:.3f}%</span></div>
-                <div class="m"><span class="ml">판정</span><span class="mv" style="color:{color}">{r.status}</span></div>
-              </div>
-              <div class="msg">{r.message}</div>
-              {roi_html}
-            </div>"""
+          <div class="category">
+            <div class="cat-head">
+              <span class="cat-icon">{cat.get('icon','📋')}</span>
+              <span class="cat-title">{cat['name']}</span>
+              <span class="cat-stats">
+                <span style="color:#86efac">PASS {cat_pass}</span> &nbsp;
+                <span style="color:#fde68a">SIMILAR {cat_sim}</span> &nbsp;
+                <span style="color:#fca5a5">FAIL {cat_fail}</span> &nbsp;
+                / {len(cat['cases'])}
+              </span>
+            </div>
+            <div class="cat-desc">{cat.get('desc','')}</div>
+            <div class="cards">"""
 
-        body_html += '</div></div>'  # .cards / .category
+            for case in cat['cases']:
+                case_num += 1
+                r: CompareResult = case['result']
+                label, color, bg, border_bg = STATUS.get(r.status, ('?', '#6b7280', '#f9fafb', '#e5e7eb'))
+
+                if r.diff_image_path and Path(r.diff_image_path).exists():
+                    diff_cell = (
+                        f'<figure><img src="data:image/png;base64,{_b64(r.diff_image_path)}" alt="diff">'
+                        f'<figcaption>Diff<br><small>빨강 = 변경 영역</small></figcaption></figure>'
+                    )
+                else:
+                    diff_cell = '<figure><div class="no-img">—</div><figcaption>Diff</figcaption></figure>'
+
+                elem_badges = ''
+                if r.roi_results:
+                    for rr in r.roi_results:
+                        chip_cls = 'chip-pass' if rr.passed else 'chip-fail'
+                        icon     = '✅' if rr.passed else '❌'
+                        elem_badges += f'<span class="chip {chip_cls}">{icon} {rr.name}</span>'
+
+                desc_html = case.get('desc', '').replace('\n', '<br>')
+
+                body_html += f"""
+              <div class="card" style="border-top:4px solid {color}">
+                <div class="card-head" style="background:{border_bg}">
+                  <span class="case-n">Case {case_num}</span>
+                  <span class="case-name">{case['name'].replace(chr(10),'<br>')}</span>
+                  <span class="badge" style="background:{color}">{label}</span>
+                </div>
+                {'<div class="desc">' + desc_html + '</div>' if desc_html else ''}
+                <div class="imgs">
+                  <figure>
+                    <img src="data:{_mime(case['baseline'])};base64,{_b64(case['baseline'])}" alt="baseline">
+                    <figcaption>Baseline<br><code>{Path(case['baseline']).name}</code></figcaption>
+                  </figure>
+                  <figure>
+                    <img src="data:{_mime(case['current'])};base64,{_b64(case['current'])}" alt="current">
+                    <figcaption>Current<br><code>{Path(case['current']).name}</code></figcaption>
+                  </figure>
+                  {diff_cell}
+                </div>
+                <div class="metrics">
+                  <div class="m"><span class="ml">브랜드</span><span class="mv">{brand.upper()}</span></div>
+                  <div class="m"><span class="ml">모드</span><span class="mv">{r.mode.upper()}</span></div>
+                  <div class="m"><span class="ml">SSIM</span><span class="mv">{r.ssim_score:.4f}</span></div>
+                  <div class="m"><span class="ml">Diff</span><span class="mv">{r.diff_pct:.3f}%</span></div>
+                  <div class="m"><span class="ml">판정</span><span class="mv" style="color:{color}">{r.status}</span></div>
+                </div>
+                <div class="msg">{r.message}</div>
+                {'<div class="elements">' + elem_badges + '</div>' if elem_badges else ''}
+              </div>"""
+
+            body_html += '</div></div>'
+        body_html += '</div>'
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -361,56 +645,60 @@ header p{{font-size:13px;opacity:.7}}
 .sc .l{{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:4px}}
 .strategy{{margin:0 40px 28px;background:#eff6ff;border-left:5px solid #3b82f6;padding:14px 18px;border-radius:0 10px 10px 0;font-size:13px}}
 .strategy p{{margin:4px 0}}
-/* ── Category ── */
-.category{{margin:0 40px 36px}}
-.cat-head{{display:flex;align-items:center;gap:10px;padding:14px 20px;background:#1e293b;border-radius:10px 10px 0 0}}
-.cat-icon{{font-size:20px}}
-.cat-title{{flex:1;font-size:17px;font-weight:700;color:#f1f5f9}}
-.cat-stats{{font-size:13px;color:#94a3b8}}
-.cat-desc{{padding:10px 20px;background:#334155;color:#94a3b8;font-size:12px;border-bottom:1px solid #475569}}
+/* Brand section */
+.brand-section{{margin:0 40px 40px}}
+.brand-head{{padding:14px 20px;background:#fff;border-radius:10px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
+.brand-title{{font-size:18px;font-weight:700;color:#0f172a}}
+/* Category */
+.category{{margin-bottom:20px}}
+.cat-head{{display:flex;align-items:center;gap:10px;padding:12px 20px;background:#1e293b;border-radius:10px 10px 0 0}}
+.cat-icon{{font-size:18px}}
+.cat-title{{flex:1;font-size:15px;font-weight:700;color:#f1f5f9}}
+.cat-stats{{font-size:12px;color:#94a3b8}}
+.cat-desc{{padding:8px 20px;background:#334155;color:#94a3b8;font-size:12px;border-bottom:1px solid #475569}}
 .cards{{display:grid;gap:0;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;overflow:hidden}}
-/* ── Card ── */
+/* Card */
 .card{{background:#fff}}
 .card+.card{{border-top:1px solid #f1f5f9}}
-.card-head{{display:flex;align-items:center;gap:12px;padding:14px 20px}}
+.card-head{{display:flex;align-items:center;gap:12px;padding:12px 20px}}
 .case-n{{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase}}
-.case-name{{flex:1;font-size:15px;font-weight:600}}
+.case-name{{flex:1;font-size:14px;font-weight:600}}
 .badge{{padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;color:#fff}}
 .desc{{padding:6px 20px 0;font-size:12px;color:#64748b}}
-.imgs{{display:flex;gap:14px;padding:16px 20px;overflow-x:auto}}
+.imgs{{display:flex;gap:14px;padding:14px 20px;overflow-x:auto}}
 figure{{flex:1;min-width:170px;text-align:center}}
 figure img{{max-width:100%;border-radius:8px;border:1px solid #e2e8f0}}
 figcaption{{margin-top:6px;font-size:12px;color:#64748b}}
 figcaption code{{font-size:10px;color:#94a3b8}}
-.no-img{{height:160px;background:#f8fafc;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:28px}}
+.no-img{{height:130px;background:#f8fafc;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:28px}}
 .metrics{{display:flex;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9}}
-.m{{flex:1;padding:12px 16px;text-align:center}}
+.m{{flex:1;padding:10px 8px;text-align:center}}
 .m+.m{{border-left:1px solid #f1f5f9}}
 .ml{{display:block;font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}}
-.mv{{display:block;font-size:17px;font-weight:700}}
-.msg{{padding:11px 20px;font-size:13px;color:#475569;background:#f8fafc}}
-.roi-block{{padding:12px 20px;border-top:1px solid #f1f5f9;font-size:13px}}
-.roi-block b{{display:block;margin-bottom:8px;color:#374151}}
-.roi-block ul{{list-style:none;display:flex;flex-direction:column;gap:5px}}
-.roi-block li{{padding:6px 12px;background:#f8fafc;border-radius:6px}}
+.mv{{display:block;font-size:15px;font-weight:700}}
+.msg{{padding:10px 20px;font-size:12px;color:#475569;background:#f8fafc}}
+.elements{{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px;border-top:1px solid #f1f5f9;background:#fafbfc}}
+.chip{{padding:5px 13px;border-radius:20px;font-size:12px;font-weight:600}}
+.chip-pass{{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}}
+.chip-fail{{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}}
 </style>
 </head>
 <body>
 <header>
   <h1>이미지 비교 테스트 리포트</h1>
-  <p>PNG Strict + JPG Perceptual Hybrid &nbsp;|&nbsp; 게이지 / 팝업 / 텔테일 카테고리별 검사</p>
+  <p>PNG Strict + JPG Perceptual Hybrid &nbsp;|&nbsp; 클러스터 요소별 ROI 자동 검사 &nbsp;|&nbsp; Tesla / Hyundai / Kia</p>
 </header>
 <div class="summary">
   <div class="sc"><div class="n" style="color:#16a34a">{pass_n}</div><div class="l">PASS</div></div>
   <div class="sc"><div class="n" style="color:#b45309">{similar_n}</div><div class="l">SIMILAR PASS</div></div>
   <div class="sc"><div class="n" style="color:#dc2626">{fail_n}</div><div class="l">FAIL</div></div>
-  <div class="sc"><div class="n">{total_n}</div><div class="l">전체</div></div>
+  <div class="sc"><div class="n">{len(all_cases)}</div><div class="l">전체</div></div>
 </div>
 <div class="strategy">
   <p><b>비교 전략</b></p>
   <p>• <b>PNG</b> &nbsp;무손실 → 엄격 비교 (SSIM ≥ 0.98, diff &lt; 0.1%)</p>
   <p>• <b>JPG</b> &nbsp;손실 압축 → 지각적 유사도 기반 (SSIM ≥ 0.95, diff &lt; 3.0%)</p>
-  <p>• <b>ROI</b> &nbsp;게이지 숫자 / 텔테일 / 팝업 영역은 포맷 무관 PNG 엄격 기준으로 별도 검사</p>
+  <p>• <b>ROI</b> &nbsp;모든 케이스에 브랜드별 표준 4개 영역(텔테일/속도/배터리/팝업) 자동 검사</p>
 </div>
 {body_html}
 </body>
@@ -418,354 +706,234 @@ figcaption code{{font-size:10px;color:#94a3b8}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 테스트 케이스 정의
+# 테스트 케이스 실행 (브랜드별 공통 15케이스)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run():
-    cmp = ImageComparator()
+def _print_result(r: CompareResult):
+    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
+    for rr in r.roi_results:
+        ok = '✅' if rr.passed else '❌'
+        print(f'          {ok} [{rr.name}]  SSIM={rr.ssim}  diff={rr.diff_pct}%')
 
-    print('\n' + '━' * 58)
-    print('  이미지 비교 데모 — 게이지 / 팝업 / 텔테일')
-    print('━' * 58)
 
-    # ════════════════════════════════════════════════════════
-    # 카테고리 1: 게이지 테스트
-    # ════════════════════════════════════════════════════════
-    print('\n[ 게이지 테스트 ]')
+def _save(img: Image.Image, path: Path, quality: Optional[int] = None):
+    if quality is not None:
+        img.save(path, quality=quality)
+    else:
+        img.save(path)
+
+
+def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
+    """브랜드별 15개 케이스 실행 → categories 리스트 반환"""
+    bd = OUT / brand
+    bd.mkdir(exist_ok=True)
+
+    def p(name): return str(bd / name)  # 경로 단축
+
+    print(f'\n{"━"*62}')
+    print(f'  [{brand.upper()}]  {BRAND_STYLE[brand]["label"]}')
+    print(f'{"━"*62}')
+
+    # ── 속도 표시 테스트 ──────────────────────────────────
+    print('\n  [ 속도 표시 테스트 ]')
     gauge_cases = []
 
-    # G-1: PNG 동일 → PASS
-    print('  G-1. PNG 동일')
-    img = make_cluster_image(speed=80)
-    img.save(OUT / 'g1_base.png')
-    img.save(OUT / 'g1_curr.png')
-    r = cmp.compare(str(OUT / 'g1_base.png'), str(OUT / 'g1_curr.png'),
-                    diff_output=str(OUT / 'g1_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    gauge_cases.append({
-        'name': 'PNG 동일',
-        'desc': '기준 이미지와 완전히 동일 — PASS 기대',
-        'baseline': str(OUT / 'g1_base.png'),
-        'current':  str(OUT / 'g1_curr.png'),
-        'result': r,
-    })
+    # G-1: PNG 동일
+    print('    G-1. PNG 동일')
+    img = make_cluster_image(brand, speed=80)
+    _save(img, bd/'g1_base.png'); _save(img, bd/'g1_curr.png')
+    r = compare_cluster(cmp, brand, p('g1_base.png'), p('g1_curr.png'), p('g1_diff.png'))
+    _print_result(r)
+    gauge_cases.append({'name': 'PNG 동일', 'baseline': p('g1_base.png'), 'current': p('g1_curr.png'), 'result': r})
 
-    # G-2: PNG 속도 변화 → FAIL
-    print('  G-2. PNG 속도 변화 (80 → 120)')
-    img1 = make_cluster_image(speed=80)
-    img2 = make_cluster_image(speed=120, gauge_color=(220, 70, 30))
-    img1.save(OUT / 'g2_base.png')
-    img2.save(OUT / 'g2_curr.png')
-    r = cmp.compare(str(OUT / 'g2_base.png'), str(OUT / 'g2_curr.png'),
-                    diff_output=str(OUT / 'g2_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    gauge_cases.append({
-        'name': 'PNG 속도 변화\n(80 → 120, 게이지 색)',
-        'baseline': str(OUT / 'g2_base.png'),
-        'current':  str(OUT / 'g2_curr.png'),
-        'result': r,
-    })
+    # G-2: PNG 속도 변화 (80→120)
+    print('    G-2. PNG 속도 변화 (80 → 120)')
+    _save(make_cluster_image(brand, speed=80),  bd/'g2_base.png')
+    _save(make_cluster_image(brand, speed=120), bd/'g2_curr.png')
+    r = compare_cluster(cmp, brand, p('g2_base.png'), p('g2_curr.png'), p('g2_diff.png'))
+    _print_result(r)
+    gauge_cases.append({'name': 'PNG 속도 변화\n(80 → 120)', 'baseline': p('g2_base.png'), 'current': p('g2_curr.png'), 'result': r})
 
-    # G-3: JPG 압축률 차이만 (동일 속도) → PASS
-    print('  G-3. JPG 동일 내용, 압축률 차이 (Q=95 vs Q=70)')
-    img = make_cluster_image(speed=60)
-    img.save(OUT / 'g3_base.jpg', quality=95)
-    img.save(OUT / 'g3_curr.jpg', quality=70)
-    r = cmp.compare(str(OUT / 'g3_base.jpg'), str(OUT / 'g3_curr.jpg'),
-                    diff_output=str(OUT / 'g3_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    gauge_cases.append({
-        'name': 'JPG 압축률 차이\n(Q=95 vs Q=70, 동일 속도)',
-        'desc': 'JPG perceptual 모드 덕분에 PASS — PNG strict 기준이면 압축 아티팩트로 FAIL 가능성 있음',
-        'baseline': str(OUT / 'g3_base.jpg'),
-        'current':  str(OUT / 'g3_curr.jpg'),
-        'result': r,
-    })
+    # G-3: JPG 동일 내용, 압축률 차이 (ROI 없이 포맷 허용 오차 시연)
+    print('    G-3. JPG 압축률 차이 (Q=95 vs Q=70)')
+    img = make_cluster_image(brand, speed=60)
+    _save(img, bd/'g3_base.jpg', quality=95); _save(img, bd/'g3_curr.jpg', quality=70)
+    r = cmp.compare(p('g3_base.jpg'), p('g3_curr.jpg'), diff_output=p('g3_diff.png'))
+    _print_result(r)
+    gauge_cases.append({'name': 'JPG 압축률 차이\n(Q=95 vs Q=70)',
+                        'desc': 'JPG perceptual 모드로 PASS — PNG strict였다면 압축 아티팩트로 FAIL 가능\n(※ 포맷 허용 오차 시연 — ROI 검사 없음)',
+                        'baseline': p('g3_base.jpg'), 'current': p('g3_curr.jpg'), 'result': r})
 
-    # G-4: JPG + ROI 미세 속도 변화 감지
-    print('  G-4. JPG 미세 속도 변화 + ROI (80 → 90)')
-    img1 = make_cluster_image(speed=80)
-    img2 = make_cluster_image(speed=90)
-    img1.save(OUT / 'g4_base.jpg', quality=90)
-    img2.save(OUT / 'g4_curr.jpg', quality=90)
-    speed_roi = ROI(name='속도계 숫자 영역', x=150, y=108, width=100, height=80, strict=True)
-    r = cmp.compare(str(OUT / 'g4_base.jpg'), str(OUT / 'g4_curr.jpg'),
-                    diff_output=str(OUT / 'g4_diff.png'), rois=[speed_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    if r.roi_results:
-        rr = r.roi_results[0]
-        print(f'          ROI [{rr.name}] passed={rr.passed}  SSIM={rr.ssim}  diff={rr.diff_pct}%')
-    gauge_cases.append({
-        'name': 'JPG 미세 속도 변화 + ROI\n(80 → 90)',
-        'desc': '전체 SSIM은 높지만 속도 숫자 ROI 영역에서 변화 감지 → FAIL',
-        'baseline': str(OUT / 'g4_base.jpg'),
-        'current':  str(OUT / 'g4_curr.jpg'),
-        'result': r,
-    })
+    # G-4: JPG 미세 속도 변화 (80→90) — ROI 가 잡아냄
+    print('    G-4. JPG 미세 속도 변화 (80 → 90)')
+    _save(make_cluster_image(brand, speed=80), bd/'g4_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=90), bd/'g4_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('g4_base.jpg'), p('g4_curr.jpg'), p('g4_diff.png'))
+    _print_result(r)
+    gauge_cases.append({'name': 'JPG 미세 속도 변화\n(80 → 90)',
+                        'desc': '전체 SSIM은 높지만 속도 표시 ROI에서 변화 감지 → FAIL',
+                        'baseline': p('g4_base.jpg'), 'current': p('g4_curr.jpg'), 'result': r})
 
-    # G-5: SIMILAR_PASS 케이스 — 극단적 JPG 압축 아티팩트
-    # PASS 기준(diff<3%)은 살짝 초과하지만 SIMILAR_PASS(diff<8%) 범위
-    print('  G-5. JPG 극단 압축 차이 (Q=95 vs Q=40) — SIMILAR_PASS 기대')
-    img = make_cluster_image(speed=100)
-    img.save(OUT / 'g5_base.jpg', quality=95)
-    img.save(OUT / 'g5_curr.jpg', quality=40)
-    r = cmp.compare(str(OUT / 'g5_base.jpg'), str(OUT / 'g5_curr.jpg'),
-                    diff_output=str(OUT / 'g5_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    gauge_cases.append({
-        'name': 'JPG 극단 압축 차이\n(Q=95 vs Q=40)',
-        'desc': (
-            'SIMILAR PASS 시연 케이스 — 동일 내용이지만 압축 품질 차이가 커서 PASS 기준(diff<3%)을 초과함. '
-            '그러나 시각적으로 유사하므로 FAIL이 아닌 SIMILAR PASS로 판정.'
-        ),
-        'baseline': str(OUT / 'g5_base.jpg'),
-        'current':  str(OUT / 'g5_curr.jpg'),
-        'result': r,
-    })
+    # G-5: JPG 극단 압축 (SIMILAR PASS 시연, ROI 없음)
+    print('    G-5. JPG 극단 압축 차이 (Q=95 vs Q=20)')
+    img = make_cluster_image(brand, speed=100)
+    _save(img, bd/'g5_base.jpg', quality=95); _save(img, bd/'g5_curr.jpg', quality=20)
+    r = cmp.compare(p('g5_base.jpg'), p('g5_curr.jpg'), diff_output=p('g5_diff.png'))
+    _print_result(r)
+    gauge_cases.append({'name': 'JPG 극단 압축 차이\n(Q=95 vs Q=20)',
+                        'desc': 'SIMILAR PASS 시연 — 동일 내용이나 극단적 압축 차이\n(※ 포맷 허용 오차 시연 — ROI 검사 없음)',
+                        'baseline': p('g5_base.jpg'), 'current': p('g5_curr.jpg'), 'result': r})
 
-    # ════════════════════════════════════════════════════════
-    # 카테고리 2: 팝업 테스트
-    # ════════════════════════════════════════════════════════
-    print('\n[ 팝업 테스트 ]')
+    # ── 팝업 테스트 ────────────────────────────────────────
+    print('\n  [ 팝업 테스트 ]')
     popup_cases = []
 
-    # P-1: 팝업 없음 vs 없음 → PASS
-    print('  P-1. JPG 팝업 없음 (동일)')
-    img = make_cluster_image(speed=70)
-    img.save(OUT / 'p1_base.jpg', quality=90)
-    img.save(OUT / 'p1_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 'p1_base.jpg'), str(OUT / 'p1_curr.jpg'),
-                    diff_output=str(OUT / 'p1_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    popup_cases.append({
-        'name': 'JPG 팝업 없음 (동일)',
-        'baseline': str(OUT / 'p1_base.jpg'),
-        'current':  str(OUT / 'p1_curr.jpg'),
-        'result': r,
-    })
+    # P-1
+    print('    P-1. JPG 팝업 없음 (동일)')
+    img = make_cluster_image(brand, speed=70)
+    _save(img, bd/'p1_base.jpg', quality=90); _save(img, bd/'p1_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('p1_base.jpg'), p('p1_curr.jpg'), p('p1_diff.png'))
+    _print_result(r)
+    popup_cases.append({'name': 'JPG 팝업 없음 (동일)', 'baseline': p('p1_base.jpg'), 'current': p('p1_curr.jpg'), 'result': r})
 
-    # P-2: 팝업 없음 → warning 팝업 등장 → FAIL
-    print('  P-2. JPG 팝업 등장 — warning (오일 교환 필요)')
-    img1 = make_cluster_image(speed=70)
-    img2 = make_cluster_image(speed=70,
-                               popup={'title': '오일 교환 필요',
-                                      'body': '주행 5,000km 초과',
-                                      'type': 'warning'})
-    img1.save(OUT / 'p2_base.jpg', quality=90)
-    img2.save(OUT / 'p2_curr.jpg', quality=90)
-    popup_roi = ROI(name='팝업 영역', x=78, y=175, width=244, height=75, strict=True)
-    r = cmp.compare(str(OUT / 'p2_base.jpg'), str(OUT / 'p2_curr.jpg'),
-                    diff_output=str(OUT / 'p2_diff.png'), rois=[popup_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    if r.roi_results:
-        rr = r.roi_results[0]
-        print(f'          ROI [{rr.name}] passed={rr.passed}  SSIM={rr.ssim}  diff={rr.diff_pct}%')
-    popup_cases.append({
-        'name': 'JPG 팝업 등장\n(warning: 오일 교환 필요)',
-        'desc': '팝업 없음 → warning 팝업 등장. 팝업 ROI 영역에서 변화 감지 → FAIL',
-        'baseline': str(OUT / 'p2_base.jpg'),
-        'current':  str(OUT / 'p2_curr.jpg'),
-        'result': r,
-    })
+    # P-2
+    print('    P-2. JPG 팝업 등장 (warning)')
+    _save(make_cluster_image(brand, speed=70), bd/'p2_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'}),
+          bd/'p2_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('p2_base.jpg'), p('p2_curr.jpg'), p('p2_diff.png'))
+    _print_result(r)
+    popup_cases.append({'name': 'JPG 팝업 등장\n(warning: 오일 교환 필요)',
+                        'desc': '팝업 없음 → warning 팝업 등장 — 팝업 ROI에서 변화 감지 → FAIL',
+                        'baseline': p('p2_base.jpg'), 'current': p('p2_curr.jpg'), 'result': r})
 
-    # P-3: warning → error 팝업 변경 → FAIL
-    print('  P-3. JPG 팝업 종류 변경 — warning → error')
-    img1 = make_cluster_image(speed=70,
-                               popup={'title': '오일 교환 필요',
-                                      'body': '주행 5,000km 초과',
-                                      'type': 'warning'})
-    img2 = make_cluster_image(speed=70,
-                               popup={'title': '차량 점검 필요',
-                                      'body': '가까운 정비소 방문',
-                                      'type': 'error'})
-    img1.save(OUT / 'p3_base.jpg', quality=90)
-    img2.save(OUT / 'p3_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 'p3_base.jpg'), str(OUT / 'p3_curr.jpg'),
-                    diff_output=str(OUT / 'p3_diff.png'), rois=[popup_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    popup_cases.append({
-        'name': 'JPG 팝업 종류 변경\n(warning → error)',
-        'baseline': str(OUT / 'p3_base.jpg'),
-        'current':  str(OUT / 'p3_curr.jpg'),
-        'result': r,
-    })
+    # P-3
+    print('    P-3. JPG 팝업 종류 변경 (warning → error)')
+    _save(make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'}),
+          bd/'p3_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=70, popup={'title':'차량 점검 필요','body':'가까운 정비소 방문','type':'error'}),
+          bd/'p3_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('p3_base.jpg'), p('p3_curr.jpg'), p('p3_diff.png'))
+    _print_result(r)
+    popup_cases.append({'name': 'JPG 팝업 종류 변경\n(warning → error)',
+                        'baseline': p('p3_base.jpg'), 'current': p('p3_curr.jpg'), 'result': r})
 
-    # P-4: 동일 팝업 상태 → PASS  ← 사용자 요청
-    print('  P-4. JPG 동일 팝업 (warning 켜진 상태에서 동일)')
-    img = make_cluster_image(speed=70,
-                             popup={'title': '오일 교환 필요',
-                                    'body': '주행 5,000km 초과',
-                                    'type': 'warning'})
-    img.save(OUT / 'p4_base.jpg', quality=90)
-    img.save(OUT / 'p4_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 'p4_base.jpg'), str(OUT / 'p4_curr.jpg'),
-                    diff_output=str(OUT / 'p4_diff.png'), rois=[popup_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    popup_cases.append({
-        'name': 'JPG 동일 팝업\n(warning 켜진 상태, 동일)',
-        'desc': '팝업이 켜진 상태에서 동일한 이미지 비교 — False Positive 없이 PASS 기대',
-        'baseline': str(OUT / 'p4_base.jpg'),
-        'current':  str(OUT / 'p4_curr.jpg'),
-        'result': r,
-    })
+    # P-4
+    print('    P-4. JPG 동일 팝업 (warning 켜진 상태, 동일)')
+    img = make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'})
+    _save(img, bd/'p4_base.jpg', quality=90); _save(img, bd/'p4_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('p4_base.jpg'), p('p4_curr.jpg'), p('p4_diff.png'))
+    _print_result(r)
+    popup_cases.append({'name': 'JPG 동일 팝업\n(warning 상태, 동일)',
+                        'desc': '팝업 켜진 상태에서 동일 비교 — False Positive 없이 PASS 기대',
+                        'baseline': p('p4_base.jpg'), 'current': p('p4_curr.jpg'), 'result': r})
 
-    # P-5: 팝업 텍스트만 변경 → FAIL
-    print('  P-5. JPG 팝업 텍스트 변경 (내용만 다름)')
-    img1 = make_cluster_image(speed=70,
-                               popup={'title': '오일 교환 필요',
-                                      'body': '주행 5,000km 초과',
-                                      'type': 'warning'})
-    img2 = make_cluster_image(speed=70,
-                               popup={'title': '타이어 공기압 부족',
-                                      'body': '앞 우측 타이어 확인',
-                                      'type': 'warning'})
-    img1.save(OUT / 'p5_base.jpg', quality=90)
-    img2.save(OUT / 'p5_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 'p5_base.jpg'), str(OUT / 'p5_curr.jpg'),
-                    diff_output=str(OUT / 'p5_diff.png'), rois=[popup_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    popup_cases.append({
-        'name': 'JPG 팝업 텍스트 변경\n(오일 교환 → 타이어 공기압)',
-        'desc': '팝업 타입(warning)은 같지만 메시지 내용이 다름 → 팝업 ROI에서 텍스트 변경 감지 → FAIL',
-        'baseline': str(OUT / 'p5_base.jpg'),
-        'current':  str(OUT / 'p5_curr.jpg'),
-        'result': r,
-    })
+    # P-5
+    print('    P-5. JPG 팝업 텍스트 변경')
+    _save(make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'}),
+          bd/'p5_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=70, popup={'title':'타이어 공기압 부족','body':'앞 우측 타이어 확인','type':'warning'}),
+          bd/'p5_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('p5_base.jpg'), p('p5_curr.jpg'), p('p5_diff.png'))
+    _print_result(r)
+    popup_cases.append({'name': 'JPG 팝업 텍스트 변경\n(오일 → 타이어 공기압)',
+                        'desc': '팝업 타입은 같지만 메시지 내용이 다름 → 팝업 ROI에서 텍스트 변경 감지 → FAIL',
+                        'baseline': p('p5_base.jpg'), 'current': p('p5_curr.jpg'), 'result': r})
 
-    # ════════════════════════════════════════════════════════
-    # 카테고리 3: 텔테일 테스트
-    # ════════════════════════════════════════════════════════
-    print('\n[ 텔테일 테스트 ]')
+    # ── 텔테일 테스트 ──────────────────────────────────────
+    print('\n  [ 텔테일 테스트 ]')
     telltale_cases = []
-    telltale_roi = ROI(name='텔테일 표시줄', x=0, y=250, width=400, height=48, strict=True)
 
-    # T-1: 모두 off vs off → PASS
-    print('  T-1. JPG 텔테일 모두 off (동일)')
-    img = make_cluster_image(speed=80, telltales=ALL_OFF.copy())
-    img.save(OUT / 't1_base.jpg', quality=90)
-    img.save(OUT / 't1_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 't1_base.jpg'), str(OUT / 't1_curr.jpg'),
-                    diff_output=str(OUT / 't1_diff.png'))
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    telltale_cases.append({
-        'name': 'JPG 텔테일 모두 off (동일)',
-        'baseline': str(OUT / 't1_base.jpg'),
-        'current':  str(OUT / 't1_curr.jpg'),
-        'result': r,
-    })
+    # T-1
+    print('    T-1. JPG 텔테일 모두 off (동일)')
+    img = make_cluster_image(brand, speed=80, telltales=ALL_OFF.copy())
+    _save(img, bd/'t1_base.jpg', quality=90); _save(img, bd/'t1_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('t1_base.jpg'), p('t1_curr.jpg'), p('t1_diff.png'))
+    _print_result(r)
+    telltale_cases.append({'name': 'JPG 텔테일 모두 off (동일)',
+                           'baseline': p('t1_base.jpg'), 'current': p('t1_curr.jpg'), 'result': r})
 
-    # T-2: ENG + OIL 켜짐 → FAIL
-    print('  T-2. JPG ENG + OIL 텔테일 켜짐')
-    img1 = make_cluster_image(speed=80, telltales=ALL_OFF.copy())
-    img2 = make_cluster_image(speed=80,
-                               telltales={**ALL_OFF, 'engine': True, 'oil': True})
-    img1.save(OUT / 't2_base.jpg', quality=90)
-    img2.save(OUT / 't2_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 't2_base.jpg'), str(OUT / 't2_curr.jpg'),
-                    diff_output=str(OUT / 't2_diff.png'), rois=[telltale_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    if r.roi_results:
-        rr = r.roi_results[0]
-        print(f'          ROI [{rr.name}] passed={rr.passed}  SSIM={rr.ssim}  diff={rr.diff_pct}%')
-    telltale_cases.append({
-        'name': 'JPG ENG + OIL 켜짐',
-        'desc': '전체 SSIM은 높지만 텔테일 ROI에서 변화 감지 → FAIL',
-        'baseline': str(OUT / 't2_base.jpg'),
-        'current':  str(OUT / 't2_curr.jpg'),
-        'result': r,
-    })
+    # T-2
+    print('    T-2. JPG ENG + OIL 텔테일 켜짐')
+    _save(make_cluster_image(brand, speed=80, telltales=ALL_OFF.copy()), bd/'t2_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'engine':True, 'oil':True}),
+          bd/'t2_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('t2_base.jpg'), p('t2_curr.jpg'), p('t2_diff.png'))
+    _print_result(r)
+    telltale_cases.append({'name': 'JPG ENG + OIL 켜짐',
+                           'desc': '텔테일 ROI에서 변화 감지 → FAIL',
+                           'baseline': p('t2_base.jpg'), 'current': p('t2_curr.jpg'), 'result': r})
 
-    # T-3: 다수 텔테일 활성 (BAT + DOOR + TEMP + SBT) → FAIL
-    print('  T-3. JPG BAT + DOOR + TEMP + SBT 켜짐')
-    img1 = make_cluster_image(speed=80, telltales=ALL_OFF.copy())
-    img2 = make_cluster_image(speed=80,
-                               telltales={**ALL_OFF,
-                                          'battery': True, 'door': True,
-                                          'temp': True, 'seatbelt': True})
-    img1.save(OUT / 't3_base.jpg', quality=90)
-    img2.save(OUT / 't3_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 't3_base.jpg'), str(OUT / 't3_curr.jpg'),
-                    diff_output=str(OUT / 't3_diff.png'), rois=[telltale_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    if r.roi_results:
-        rr = r.roi_results[0]
-        print(f'          ROI [{rr.name}] passed={rr.passed}  SSIM={rr.ssim}  diff={rr.diff_pct}%')
-    telltale_cases.append({
-        'name': 'JPG BAT + DOOR + TEMP + SBT 켜짐',
-        'baseline': str(OUT / 't3_base.jpg'),
-        'current':  str(OUT / 't3_curr.jpg'),
-        'result': r,
-    })
+    # T-3
+    print('    T-3. JPG BAT + DOOR + TEMP + SBT 켜짐')
+    _save(make_cluster_image(brand, speed=80, telltales=ALL_OFF.copy()), bd/'t3_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=80,
+                              telltales={**ALL_OFF, 'battery':True,'door':True,'temp':True,'seatbelt':True}),
+          bd/'t3_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('t3_base.jpg'), p('t3_curr.jpg'), p('t3_diff.png'))
+    _print_result(r)
+    telltale_cases.append({'name': 'JPG BAT+DOOR+TEMP+SBT 켜짐',
+                           'baseline': p('t3_base.jpg'), 'current': p('t3_curr.jpg'), 'result': r})
 
-    # T-4: 동일 텔테일 활성 상태 → PASS  ← 사용자 요청
-    print('  T-4. JPG 동일 텔테일 활성 (ENG+OIL 켜진 상태에서 동일)')
-    img = make_cluster_image(speed=80, telltales={**ALL_OFF, 'engine': True, 'oil': True})
-    img.save(OUT / 't4_base.jpg', quality=90)
-    img.save(OUT / 't4_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 't4_base.jpg'), str(OUT / 't4_curr.jpg'),
-                    diff_output=str(OUT / 't4_diff.png'), rois=[telltale_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    telltale_cases.append({
-        'name': 'JPG 동일 텔테일 활성\n(ENG+OIL 켜진 상태, 동일)',
-        'desc': '텔테일이 켜진 상태에서 동일한 이미지 비교 — False Positive 없이 PASS 기대',
-        'baseline': str(OUT / 't4_base.jpg'),
-        'current':  str(OUT / 't4_curr.jpg'),
-        'result': r,
-    })
+    # T-4
+    print('    T-4. JPG 동일 텔테일 활성 (ENG+OIL 켜진 상태, 동일)')
+    img = make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'engine':True, 'oil':True})
+    _save(img, bd/'t4_base.jpg', quality=90); _save(img, bd/'t4_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('t4_base.jpg'), p('t4_curr.jpg'), p('t4_diff.png'))
+    _print_result(r)
+    telltale_cases.append({'name': 'JPG 동일 텔테일 활성\n(ENG+OIL 켜진 상태, 동일)',
+                           'desc': '텔테일 켜진 상태에서 동일 비교 — False Positive 없이 PASS 기대',
+                           'baseline': p('t4_base.jpg'), 'current': p('t4_curr.jpg'), 'result': r})
 
-    # T-5: 텔테일 패턴 교체 (같은 수, 다른 경고등) → FAIL
-    print('  T-5. JPG 텔테일 패턴 교체 (ENG → FUEL, 켜진 수는 동일)')
-    img1 = make_cluster_image(speed=80, telltales={**ALL_OFF, 'engine': True})
-    img2 = make_cluster_image(speed=80, telltales={**ALL_OFF, 'fuel': True})
-    img1.save(OUT / 't5_base.jpg', quality=90)
-    img2.save(OUT / 't5_curr.jpg', quality=90)
-    r = cmp.compare(str(OUT / 't5_base.jpg'), str(OUT / 't5_curr.jpg'),
-                    diff_output=str(OUT / 't5_diff.png'), rois=[telltale_roi])
-    print(f'       → {r.status}  SSIM={r.ssim_score:.4f}  diff={r.diff_pct:.3f}%')
-    if r.roi_results:
-        rr = r.roi_results[0]
-        print(f'          ROI [{rr.name}] passed={rr.passed}  SSIM={rr.ssim}  diff={rr.diff_pct}%')
-    telltale_cases.append({
-        'name': 'JPG 텔테일 패턴 교체\n(ENG → FUEL, 켜진 수는 동일)',
-        'desc': '켜진 텔테일 수(1개)는 같지만 종류가 다름 — 패턴 차이를 감지해야 FAIL',
-        'baseline': str(OUT / 't5_base.jpg'),
-        'current':  str(OUT / 't5_curr.jpg'),
-        'result': r,
-    })
+    # T-5
+    print('    T-5. JPG 텔테일 패턴 교체 (ENG → FUEL, 켜진 수 동일)')
+    _save(make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'engine':True}),
+          bd/'t5_base.jpg', quality=90)
+    _save(make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'fuel':True}),
+          bd/'t5_curr.jpg', quality=90)
+    r = compare_cluster(cmp, brand, p('t5_base.jpg'), p('t5_curr.jpg'), p('t5_diff.png'))
+    _print_result(r)
+    telltale_cases.append({'name': 'JPG 텔테일 패턴 교체\n(ENG → FUEL, 켜진 수 동일)',
+                           'desc': '켜진 수(1개)는 같지만 종류가 다름 — 패턴 차이를 감지해야 FAIL',
+                           'baseline': p('t5_base.jpg'), 'current': p('t5_curr.jpg'), 'result': r})
 
-    # ════════════════════════════════════════════════════════
-    # HTML 리포트 생성
-    # ════════════════════════════════════════════════════════
-    categories = [
-        {
-            'name': '게이지 테스트',
-            'icon': '🎯',
-            'desc': '속도 변화 / 게이지 색 변경 / JPG 압축 아티팩트 허용 여부 검증',
-            'cases': gauge_cases,
-        },
-        {
-            'name': '팝업 테스트',
-            'icon': '💬',
-            'desc': '팝업 등장 / 팝업 종류 변경(warning→error) 감지',
-            'cases': popup_cases,
-        },
-        {
-            'name': '텔테일 테스트',
-            'icon': '⚠️',
-            'desc': '경고등 활성 상태 변화 감지 — ROI로 텔테일 표시줄 영역을 별도 엄격 검사',
-            'cases': telltale_cases,
-        },
+    return [
+        {'name': '속도 표시 테스트', 'icon': '🎯',
+         'desc': '속도 변화 / JPG 압축 아티팩트 허용 / 미세 변화 ROI 감지 검증',
+         'cases': gauge_cases},
+        {'name': '팝업 테스트', 'icon': '💬',
+         'desc': '팝업 등장 / 종류 변경 / 텍스트 변경 감지',
+         'cases': popup_cases},
+        {'name': '텔테일 테스트', 'icon': '⚠️',
+         'desc': '경고등 활성 상태 변화 감지 — 패턴 교체(수는 같아도 종류 다르면 FAIL) 포함',
+         'cases': telltale_cases},
     ]
 
-    print('\n' + '━' * 58)
+
+def run(active_brand: str = 'all'):
+    cmp    = ImageComparator()
+    brands = ['tesla', 'hyundai', 'kia'] if active_brand == 'all' else [active_brand]
+
+    brand_sections = []
+    for brand in brands:
+        categories = run_brand(brand, cmp)
+        brand_sections.append({'brand': brand, 'categories': categories})
+
+    print(f'\n{"━"*62}')
     print('HTML 리포트 생성 중...')
     report_path = OUT / 'report.html'
-    report_path.write_text(build_html_report(categories), encoding='utf-8')
+    report_path.write_text(build_html_report(brand_sections), encoding='utf-8')
     print(f'\n완료: {report_path.resolve()}')
-    print('\n브라우저로 열기:')
-    print(f'  wslview "{report_path.resolve()}"')
-    print(f'  또는 Windows 탐색기에서 파일 더블클릭\n')
+    print(f'\n브라우저로 열기: wslview "{report_path.resolve()}"\n')
 
 
 if __name__ == '__main__':
-    run()
+    parser = argparse.ArgumentParser(description='클러스터 이미지 비교 데모')
+    parser.add_argument(
+        '--brand',
+        choices=['tesla', 'hyundai', 'kia', 'all'],
+        default=ACTIVE_BRAND,
+        help='테스트할 브랜드 (기본값: ACTIVE_BRAND 설정값)',
+    )
+    args = parser.parse_args()
+    run(args.brand)
