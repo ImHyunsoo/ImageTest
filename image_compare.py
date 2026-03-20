@@ -286,9 +286,10 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
       threshold=80  : 흰색 숫자 전용 (어두운 배경, 밝은 텍스트)
       threshold=160 : 컬러 텍스트 전용 (배경=240+→흰색, 컬러텍스트=80~150→검정)
 
-    lang='num' : 숫자 전용 whitelist, psm=6 (psm=8 fallback)
-    lang='kor' : 한국어 OCR (tesseract-ocr-kor 필요), psm=6
-    lang='eng' : 영어 OCR, psm=6
+    lang='num'     : 숫자 전용 whitelist, psm=6 (psm=8 fallback)
+    lang='kor'     : 한국어 OCR (tesseract-ocr-kor 필요), psm=6
+    lang='kor+eng' : 한국어+영문 혼합 OCR (숫자·단위 포함 텍스트), psm=6
+    lang='eng'     : 영어 OCR, psm=6
 
     언어 데이터 미설치 시 None 반환 (판정 보류, FAIL로 처리하지 않음).
     pytesseract 미설치 시 None 반환.
@@ -311,10 +312,10 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
                 processed, config='--psm 8 -c tessedit_char_whitelist=0123456789'
             ).strip()
         return text
-    elif lang == 'kor':
+    elif lang in ('kor', 'kor+eng'):
         try:
             return pytesseract.image_to_string(
-                processed, config='--psm 6 --oem 1 -l kor'
+                processed, config=f'--psm 6 --oem 1 -l {lang}'
             ).strip()
         except Exception:
             return None  # tesseract-ocr-kor 미설치

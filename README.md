@@ -56,30 +56,33 @@ ROI(name='엔진경고등', x=50, y=10, width=60, height=38, color_check=True)
 # Hue 차이 ≥ 20° 이면 색상 변화로 FAIL
 ```
 
-#### ④ OCR 텍스트 검증
-숫자나 텍스트가 있는 영역을 **OCR로 직접 읽어 기대값과 비교**합니다.
-SSIM만으로는 놓칠 수 있는 미세한 수치 변화도 정확하게 감지합니다.
+#### ④ OCR 텍스트 검증 — baseline vs current 비교 방식
+
+숫자나 텍스트가 있는 영역을 **baseline·current 양쪽에서 OCR로 읽어 두 값을 비교**합니다.
+하드코딩된 기대값 없이, baseline 이미지에서 추출한 값이 기준이 됩니다.
+
+```
+OCR 기대 = baseline 이미지에서 추출한 텍스트
+OCR 실제 = current 이미지에서 추출한 텍스트
+두 값이 다르면 → FAIL
+```
 
 ```python
 # 숫자 검증 (속도, 배터리 %, 주행 거리 등)
-ROI(name='속도(OCR)', x=145, y=70, width=195, height=95, ocr_expected='80')
+ROI(name='속도(OCR)', x=145, y=70, width=195, height=95,
+    ocr=True)  # ocr_lang='num' (기본)
 
-# 한국어 텍스트 검증 (팝업 메시지 등)
-ROI(name='팝업텍스트(OCR)', x=56, y=220, width=370, height=35,
-    ocr_lang='kor', ocr_threshold=160, ocr_expected='오일 교환 필요',
-    ocr_match='contains')
+# 한국어+영문 혼합 텍스트 검증 (팝업 메시지 등)
+ROI(name='팝업텍스트(OCR)', x=40, y=205, width=390, height=60,
+    ocr=True, ocr_lang='kor+eng', ocr_threshold=160)
 ```
 
 | `ocr_lang` | 용도 | 필요 패키지 |
 |------------|------|------------|
 | `'num'` (기본) | 숫자 전용 (0-9 whitelist) | tesseract-ocr |
-| `'kor'` | 한국어 | tesseract-ocr-kor |
+| `'kor'` | 한국어 전용 | tesseract-ocr-kor |
+| `'kor+eng'` | 한국어+영문 혼합 (단위·숫자 포함 텍스트) | tesseract-ocr-kor |
 | `'eng'` | 영어 | tesseract-ocr |
-
-| `ocr_match` | 동작 |
-|-------------|------|
-| `'exact'` (기본) | 완전 일치 |
-| `'contains'` | 기대값이 OCR 결과에 포함되면 PASS |
 
 > 언어 데이터 미설치 시 OCR 결과는 `None`으로 표시되며, 판정에서 제외(FAIL로 처리 안 함)됩니다.
 
@@ -101,9 +104,11 @@ diff 이미지에서 마스크 영역은 파란 오버레이로 표시됩니다.
 
 #### ⑦ HTML 리포트
 - **브랜드 탭 필터링**: Tesla / Hyundai / Kia 탭으로 전환
-- **ROI 테이블**: SSIM / Diff / Hue / OCR 결과 한눈에 확인
+- **ROI 테이블**: SSIM / Diff / Hue / OCR 기대(Baseline) / OCR 실제(Current) 한눈에 확인
 - **크롭 썸네일**: ROI 영역을 확대한 before/after 이미지
 - **ROI 오버레이**: baseline / current 이미지 위에 ROI 박스 시각화
+- **이미지 클릭 시 라이트박스 확대**: 모든 이미지 클릭 → 모달로 크게 보기 (ESC로 닫기)
+- **수평 스크롤**: ROI 테이블이 길어져도 테스트 카드 내에서 가로 스크롤
 
 ---
 
@@ -188,7 +193,7 @@ python image_compare.py baseline.png current.jpg --diff diff.png
 
 # ROI 지정 (속도 숫자 OCR 검증)
 python image_compare.py baseline.png current.jpg \
-    --roi 145,70,195,95,속도계,ocr=80
+    --roi 145,70,195,95,속도계,ocr
 
 # ROI 여러 개 + 색상 감지 + 마스크
 python image_compare.py baseline.png current.jpg \
@@ -197,7 +202,7 @@ python image_compare.py baseline.png current.jpg \
     --mask 380,0,100,48,시계
 ```
 
-ROI 형식: `x,y,너비,높이,이름[,color][,ocr=기대값]`
+ROI 형식: `x,y,너비,높이,이름[,color][,ocr]`
 
 ---
 
@@ -220,13 +225,15 @@ result = cmp.compare(
     'current.jpg',
     diff_output='diff.png',
     rois=[
-        ROI(name='속도(OCR)',   x=145, y=70,  width=195, height=95,
-            ocr_expected='80'),
-        ROI(name='경고등',      x=50,  y=10,  width=60,  height=38,
+        # 숫자 OCR: baseline vs current 자동 비교
+        ROI(name='속도(OCR)', x=145, y=70, width=195, height=95,
+            ocr=True),
+        # 색상 감지
+        ROI(name='경고등', x=50, y=10, width=60, height=38,
             color_check=True),
-        ROI(name='팝업텍스트', x=56,  y=220, width=370, height=35,
-            ocr_lang='kor', ocr_threshold=160,
-            ocr_expected='오일 교환 필요', ocr_match='contains'),
+        # 한국어+영문 혼합 팝업 텍스트 OCR
+        ROI(name='팝업텍스트', x=40, y=205, width=390, height=60,
+            ocr=True, ocr_lang='kor+eng', ocr_threshold=160),
     ],
     masks=[
         Mask(name='시계', x=380, y=0, width=100, height=48),
@@ -234,10 +241,11 @@ result = cmp.compare(
 )
 
 # ROI 결과 확인
-for roi_result in result.roi_results:
-    print(roi_result.name, roi_result.passed)
-    if roi_result.ocr_text is not None:
-        print(f'  OCR: {roi_result.ocr_text!r} (기대: {roi_result.ocr_expected!r})')
+for r in result.roi_results:
+    print(r.name, '✅' if r.passed else '❌')
+    if r.ocr_base is not None:
+        print(f'  OCR 기대(baseline): {r.ocr_base!r}')
+        print(f'  OCR 실제(current):  {r.ocr_curr!r}')
 ```
 
 ---
@@ -266,10 +274,10 @@ for roi_result in result.roi_results:
 | 케이스 | 설명 | 기대 결과 | OCR |
 |--------|------|----------|-----|
 | P-1 | JPG 팝업 없음, 동일 | ✅ PASS | 팝업 없음 확인 |
-| P-2 | JPG 팝업 없음 → warning 팝업 등장 | ❌ FAIL | 팝업 텍스트 내용 확인 |
-| P-3 | JPG warning → error 팝업 (종류 변경) | ❌ FAIL | 변경된 텍스트 확인 |
+| P-2 | JPG 팝업 없음 → warning 팝업 등장 | ❌ FAIL | baseline=(없음) vs current="오일 교환 필요..." → FAIL |
+| P-3 | JPG warning → error 팝업 (종류 변경) | ❌ FAIL | 변경된 텍스트 OCR 감지 |
 | P-4 | JPG 동일 팝업 켜진 상태에서 비교 | ✅ PASS | 팝업 텍스트 동일 확인 |
-| P-5 | JPG 팝업 텍스트만 변경 (종류는 동일, 오일 → 타이어) | ❌ FAIL | **OCR이 핵심 — SSIM은 구조 유사로 놓칠 수 있음** |
+| P-5 | JPG 팝업 텍스트만 변경 (오일 → 타이어) | ❌ FAIL | **OCR이 핵심 — SSIM만으로는 감지 어려움** |
 
 > **P-5 핵심 포인트**: 팝업 타입(warning)과 레이아웃이 같아서 SSIM 단독으로는 감지가 어렵지만,
 > OCR이 "오일 교환 필요" ≠ "타이어 공기압 부족"을 정확히 잡아냄.
@@ -305,7 +313,7 @@ for roi_result in result.roi_results:
   • SSIM 계산                 각 ROI마다:
   • 픽셀 diff % 계산           • SSIM + diff 계산 (포맷 엄격 기준)
   • diff 이미지 저장           • color_check → HSV Hue diff
-                               • ocr_expected → OCR 텍스트 읽기 + 비교
+                               • ocr=True → baseline/current 양쪽 OCR 후 비교
          │                      │
          └──────────┬───────────┘
                     ▼
@@ -330,8 +338,27 @@ for roi_result in result.roi_results:
 
 ---
 
-## 10. 고객 설명용 한 줄 요약
+## 10. OCR 한계 및 설계 방침
+
+대시보드 이미지의 OCR은 완벽하지 않습니다. 아래 요인으로 인해 텍스트가 일부 잘못 읽힐 수 있습니다.
+
+| 요인 | 내용 |
+|------|------|
+| 소형 폰트 | 작은 글씨는 upscale 후에도 픽셀이 부족해 획이 뭉개짐 |
+| JPG 압축 아티팩트 | 블록 노이즈가 문자 경계를 흐리게 만듦 |
+| 대시보드 전용 폰트 | Tesseract 학습 데이터와 다른 글꼴 |
+| 혼합 텍스트 | 한국어+숫자+영문 단위(km, %) 혼합 (`kor+eng` 사용으로 부분 해결) |
+
+**설계 방침**: OCR 결과가 완벽하지 않아도 **같은 이미지는 항상 같은(일관된) 결과**를 냅니다.
+따라서 "baseline OCR == current OCR" 비교 판정은 올바르게 동작합니다.
+- 팝업 없음 → 팝업 등장: `""` ≠ `"오일 교환 필요..."` → **FAIL** ✅
+- 동일 팝업 유지: `"오일 교환..."` == `"오일 교환..."` → **PASS** ✅
+- 팝업 텍스트 변경: `"오일 교환..."` ≠ `"타이어 공기압..."` → **FAIL** ✅
+
+---
+
+## 11. 고객 설명용 한 줄 요약
 
 > "PNG는 무손실이라 픽셀 완전 일치 비교가 가능하지만, JPG는 손실 압축 특성상 같은 이미지라도 저장할 때마다 픽셀이 달라집니다.
 > 그래서 JPG는 시각적 유사도(SSIM) 기반으로 비교하고, 속도 숫자·경고등·팝업처럼 핵심 영역은 포맷에 관계없이 별도로 엄격하게 검사하며,
-> OCR로 텍스트/숫자 값을 직접 읽어 기대값과 일치하는지도 확인합니다."
+> OCR로 텍스트/숫자를 baseline과 current 양쪽에서 직접 읽어 두 값을 비교합니다."

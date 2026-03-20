@@ -115,7 +115,7 @@ BRAND_OCR_SPEED_ROI = {
 
 # 팝업 제목+본문 OCR 좌표 — _draw_popup 기준 (모든 브랜드 공통)
 # 제목: (px0+46, py0+11) = (56, 224),  본문: (56, 243)
-POPUP_TEXT_OCR_COORD = dict(x=56, y=220, width=370, height=35)
+POPUP_TEXT_OCR_COORD = dict(x=40, y=205, width=390, height=60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 브랜드별 스타일 설정
@@ -540,7 +540,7 @@ def _rois(brand: str, *, popup_ocr: bool = False) -> list[ROI]:
     if popup_ocr:
         rois.append(ROI(
             name='팝업텍스트(OCR)', strict=False, ocr=True,
-            ocr_lang='kor', ocr_threshold=160,
+            ocr_lang='kor+eng', ocr_threshold=160,
             **POPUP_TEXT_OCR_COORD,
         ))
     return rois
