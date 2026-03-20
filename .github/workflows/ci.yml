@@ -36,7 +36,7 @@ jobs:
           key: easyocr-models-v1
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libgl1
+        run: sudo apt-get install -y libgl1 tesseract-ocr tesseract-ocr-kor
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
