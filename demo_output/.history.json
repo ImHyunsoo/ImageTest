@@ -1,0 +1,89 @@
+[
+  {
+    "timestamp": "2026-03-20 16:23",
+    "brands": {
+      "tesla": {
+        "pass": 7,
+        "similar": 1,
+        "fail": 9,
+        "total": 17
+      },
+      "hyundai": {
+        "pass": 6,
+        "similar": 1,
+        "fail": 10,
+        "total": 17
+      },
+      "kia": {
+        "pass": 7,
+        "similar": 1,
+        "fail": 9,
+        "total": 17
+      }
+    },
+    "total": {
+      "pass": 20,
+      "similar": 3,
+      "fail": 28,
+      "total": 51
+    }
+  },
+  {
+    "timestamp": "2026-03-20 16:30",
+    "brands": {
+      "tesla": {
+        "pass": 1,
+        "similar": 0,
+        "fail": 1,
+        "total": 2
+      },
+      "hyundai": {
+        "pass": 0,
+        "similar": 0,
+        "fail": 1,
+        "total": 1
+      },
+      "kia": {
+        "pass": 0,
+        "similar": 0,
+        "fail": 1,
+        "total": 1
+      }
+    },
+    "total": {
+      "pass": 1,
+      "similar": 0,
+      "fail": 3,
+      "total": 4
+    }
+  },
+  {
+    "timestamp": "2026-03-20 16:44",
+    "brands": {
+      "tesla": {
+        "pass": 1,
+        "similar": 0,
+        "fail": 1,
+        "total": 2
+      },
+      "hyundai": {
+        "pass": 0,
+        "similar": 0,
+        "fail": 1,
+        "total": 1
+      },
+      "kia": {
+        "pass": 0,
+        "similar": 0,
+        "fail": 1,
+        "total": 1
+      }
+    },
+    "total": {
+      "pass": 1,
+      "similar": 0,
+      "fail": 3,
+      "total": 4
+    }
+  }
+]

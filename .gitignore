@@ -1,0 +1,9 @@
+# Python 가상환경
+.venv/
+__pycache__/
+*.pyc
+
+# 테스트 출력물 (diff 이미지, HTML 리포트, JUnit XML)
+demo_output/**/*_diff.png
+demo_output/report*.html
+results.xml

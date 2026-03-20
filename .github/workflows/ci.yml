@@ -1,0 +1,64 @@
+name: Image Comparison Tests
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # pip 캐시 — torch/easyocr 설치 시간 단축 (첫 실행: ~5분, 이후: ~30초)
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # EasyOCR 모델 파일 캐시 (~100MB, 다운로드 1회만)
+      - name: Cache EasyOCR models
+        uses: actions/cache@v4
+        with:
+          path: ~/.EasyOCR
+          key: easyocr-models-v1
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libgl1
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run image comparison tests
+        run: python demo.py --config tests_sample.yaml --junit results.xml
+
+      # 테스트 결과를 GitHub PR/Actions UI에 표시
+      - name: Publish JUnit test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()   # 테스트 실패해도 리포트 업로드
+        with:
+          report_paths: results.xml
+          check_name: Image Comparison Results
+
+      # HTML 리포트와 JUnit XML을 아티팩트로 저장 (90일 보관)
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            results.xml
+            demo_output/report_config.html
+          retention-days: 90
