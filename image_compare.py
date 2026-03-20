@@ -9,15 +9,16 @@ PNG/JPG 포맷에 따라 비교 전략을 자동으로 선택합니다.
                 JPG strict — SSIM ≥ 0.96, diff < 1.5%  (압축 아티팩트 허용)
   ROI(color):   Hue 색상 변화 별도 감지 (경고등 색상 전환 등)
                 기본 임계값 20° — 이 이상 hue 차이 시 FAIL
-  ROI(ocr):     해당 영역 텍스트를 OCR로 읽어 기대값과 비교
-                숫자/텍스트 값이 맞는지 직접 검증 (pytesseract 필요)
+  ROI(ocr):     baseline · current 양쪽을 OCR로 읽어 서로 비교
+                baseline에서 읽은 값과 current에서 읽은 값이 다르면 FAIL
+                (pytesseract 필요)
   Mask:         동적 UI 영역(시계·애니메이션) 비교 제외
                 diff 이미지에서 파란 오버레이로 표시
 
 CLI 사용:
   python image_compare.py baseline.png current.jpg
   python image_compare.py baseline.png current.jpg --diff out/diff.png
-  python image_compare.py baseline.png current.jpg --roi 130,72,220,93,속도계,ocr=80
+  python image_compare.py baseline.png current.jpg --roi 130,72,220,93,속도계,ocr
   python image_compare.py baseline.png current.jpg --roi 50,10,60,38,경고등,color
   python image_compare.py baseline.png current.jpg --mask 380,0,100,48,시계
 """
@@ -99,10 +100,9 @@ class ROI:
     height: int
     strict: bool = True        # True = 포맷에 맞는 엄격 기준 적용
     color_check: bool = False  # True = Hue 색상 변화도 별도 감지 (경고등 색상 전환 등)
-    ocr_expected: Optional[str] = None  # 설정 시 OCR로 텍스트 읽어 기대값과 비교
+    ocr: bool = False          # True = baseline·current 양쪽 OCR 후 비교
     ocr_lang: str = 'num'      # 'num'=숫자전용, 'kor'=한국어, 'eng'=영어
     ocr_threshold: int = 80    # 전처리 이진화 임계값 (숫자=80, 컬러텍스트=160)
-    ocr_match: str = 'exact'   # 'exact'=완전일치, 'contains'=포함여부
 
 
 @dataclass
@@ -123,9 +123,9 @@ class ROIResult:
     passed: bool
     hue_diff: float = 0.0          # color_check=True 일 때 채워짐 (도 단위)
     color_failed: bool = False     # hue_diff 가 임계값 초과
-    ocr_text: Optional[str] = None     # ocr_expected 설정 시 실제 읽은 텍스트
-    ocr_expected: Optional[str] = None # 기대값
-    ocr_failed: bool = False           # ocr_text != ocr_expected
+    ocr_base: Optional[str] = None # ocr=True 일 때 baseline 에서 읽은 텍스트
+    ocr_curr: Optional[str] = None # ocr=True 일 때 current 에서 읽은 텍스트
+    ocr_failed: bool = False       # ocr_base != ocr_curr
     # 크롭/오버레이 시각화를 위해 ROI 원본 좌표 보존
     x: int = 0
     y: int = 0
@@ -163,10 +163,10 @@ class CompareResult:
                 extra += f'  🎨 Hue={r.hue_diff:.1f}°'
                 if r.color_failed:
                     extra += ' ❌색상변화'
-            if r.ocr_text is not None:
-                extra += f'  🔤 OCR={repr(r.ocr_text)}'
+            if r.ocr_base is not None or r.ocr_curr is not None:
+                extra += f'  🔤 기준={repr(r.ocr_base)} 비교={repr(r.ocr_curr)}'
                 if r.ocr_failed:
-                    extra += f' ❌(기대:{repr(r.ocr_expected)})'
+                    extra += ' ❌OCR불일치'
             print(f'   ROI [{r.name}] {ok}  SSIM={r.ssim:.4f}  diff={r.diff_pct:.3f}%{extra}')
         print(sep)
 
@@ -422,20 +422,20 @@ class ImageComparator:
                 hue_diff = _mean_hue_diff(r1, r2_orig)
                 color_failed = hue_diff > cfg.color_hue_thr
 
-            # ── OCR 텍스트 검증 (ocr_expected 설정된 ROI만) ──
-            ocr_text   = None
+            # ── OCR 텍스트 검증 (ocr=True 인 ROI만) ──
+            # baseline 과 current 양쪽을 읽어 서로 비교
+            ocr_base   = None
+            ocr_curr   = None
             ocr_failed = False
-            if roi.ocr_expected is not None:
-                ocr_text = _ocr_read(arr2[y0:y1, x0:x1],
+            if roi.ocr:
+                ocr_base = _ocr_read(arr1[y0:y1, x0:x1],
                                      lang=roi.ocr_lang, threshold=roi.ocr_threshold)
-                if ocr_text is None:
+                ocr_curr = _ocr_read(arr2[y0:y1, x0:x1],
+                                     lang=roi.ocr_lang, threshold=roi.ocr_threshold)
+                if ocr_base is None or ocr_curr is None:
                     ocr_failed = False   # 언어 데이터 없음 → 판정 보류
-                elif roi.ocr_match == 'contains':
-                    # 기대값이 빈 문자열: 텍스트 없음 검증
-                    ocr_failed = (bool(ocr_text.strip()) if roi.ocr_expected == ''
-                                  else roi.ocr_expected not in ocr_text)
-                else:  # exact
-                    ocr_failed = (ocr_text.strip() != roi.ocr_expected.strip())
+                else:
+                    ocr_failed = (ocr_base.strip() != ocr_curr.strip())
 
             r_passed = (roi_ssim >= roi_ssim_thr and r_diff < roi_diff_thr
                         and not color_failed and not ocr_failed)
@@ -447,8 +447,8 @@ class ImageComparator:
                 passed=r_passed,
                 hue_diff=round(hue_diff, 1),
                 color_failed=color_failed,
-                ocr_text=ocr_text,
-                ocr_expected=roi.ocr_expected,
+                ocr_base=ocr_base,
+                ocr_curr=ocr_curr,
                 ocr_failed=ocr_failed,
                 x=roi.x, y=roi.y, width=roi.width, height=roi.height,
             ))
@@ -483,24 +483,24 @@ class ImageComparator:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_roi(s: str) -> ROI:
-    """ROI 파싱. 형식: x,y,w,h,이름[,color][,ocr=기대값]"""
+    """ROI 파싱. 형식: x,y,w,h,이름[,color][,ocr]"""
     parts = s.split(',', 5)
     if len(parts) < 5:
         raise argparse.ArgumentTypeError(
-            'ROI 형식: x,y,w,h,이름[,color|ocr=값]\n'
-            '  예) 130,72,220,93,속도계,ocr=80\n'
+            'ROI 형식: x,y,w,h,이름[,color][,ocr]\n'
+            '  예) 130,72,220,93,속도계,ocr\n'
             '      50,10,60,38,경고등,color')
     x, y, w, h = (int(p) for p in parts[:4])
-    color_check  = False
-    ocr_expected = None
+    color_check = False
+    ocr         = False
     for opt in parts[5:]:
-        opt = opt.strip()
-        if opt.lower() == 'color':
+        opt = opt.strip().lower()
+        if opt == 'color':
             color_check = True
-        elif opt.lower().startswith('ocr='):
-            ocr_expected = opt[4:]
+        elif opt == 'ocr':
+            ocr = True
     return ROI(name=parts[4], x=x, y=y, width=w, height=h,
-               color_check=color_check, ocr_expected=ocr_expected)
+               color_check=color_check, ocr=ocr)
 
 
 def _parse_mask(s: str) -> Mask:

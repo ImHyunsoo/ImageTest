@@ -525,27 +525,22 @@ def compare_cluster(cmp: ImageComparator, brand: str,
     return cmp.compare(base, curr, diff_output=diff, rois=BRAND_ROIS[brand])
 
 
-def _rois(brand: str, *, speed: int = None, popup_title: Optional[str] = None) -> list[ROI]:
+def _rois(brand: str, *, popup_ocr: bool = False) -> list[ROI]:
     """
-    BRAND_ROIS[brand] + 테스트별 OCR ROI 조합.
+    BRAND_ROIS[brand] + OCR ROI 조합.
 
-    speed       : 설정 시 OCR로 속도 숫자 검증 (expected = str(speed))
-    popup_title : 설정 시 한국어 OCR로 팝업 제목 검증
-                  ''     → 팝업 없음 기대 (빈 화면)
-                  '오일 교환 필요' → 해당 문구 포함 기대 (contains 매칭)
+    속도 OCR은 항상 포함 (baseline vs current 자동 비교).
+    popup_ocr=True 시 팝업 텍스트 OCR도 추가.
     """
     rois = list(BRAND_ROIS[brand])
-    if speed is not None:
+    rois.append(ROI(
+        name='속도(OCR)', strict=False, ocr=True,
+        **BRAND_OCR_SPEED_ROI[brand],
+    ))
+    if popup_ocr:
         rois.append(ROI(
-            name='속도(OCR)', strict=False, ocr_expected=str(speed),
-            **BRAND_OCR_SPEED_ROI[brand],
-        ))
-    if popup_title is not None:
-        rois.append(ROI(
-            name='팝업텍스트(OCR)', strict=False,
+            name='팝업텍스트(OCR)', strict=False, ocr=True,
             ocr_lang='kor', ocr_threshold=160,
-            ocr_expected=popup_title,
-            ocr_match='exact' if popup_title == '' else 'contains',
             **POPUP_TEXT_OCR_COORD,
         ))
     return rois
@@ -675,9 +670,17 @@ def build_html_report(brand_sections: list[dict]) -> str:
                 r: CompareResult = case['result']
                 label, color, bg, border_bg = STATUS.get(r.status, ('?', '#6b7280', '#f9fafb', '#e5e7eb'))
 
+                def _img_tag(src_b64, mime='image/png', alt='', title='', clickable=True):
+                    """클릭 시 라이트박스로 확대 가능한 img 태그"""
+                    onclick = f' onclick="lb(this.src,\'{title}\')" style="cursor:zoom-in"' if clickable else ''
+                    return f'<img src="data:{mime};base64,{src_b64}" alt="{alt}" title="{title}"{onclick}>'
+
+                base_name = Path(case['baseline']).name
+                curr_name = Path(case['current']).name
+
                 if r.diff_image_path and Path(r.diff_image_path).exists():
                     diff_cell = (
-                        f'<figure><img src="data:image/png;base64,{_b64(r.diff_image_path)}" alt="diff">'
+                        f'<figure>{_img_tag(_b64(r.diff_image_path), alt="diff", title="Diff 이미지")}'
                         f'<figcaption>Diff<br><small>빨강 = 변경 영역</small></figcaption></figure>'
                     )
                 else:
@@ -689,26 +692,26 @@ def build_html_report(brand_sections: list[dict]) -> str:
                     curr_ov = _roi_overlay_b64(case['current'],  r.roi_results)
                     base_fig = (
                         f'<figure>'
-                        f'<img src="data:image/png;base64,{base_ov}" alt="baseline+ROI">'
+                        f'{_img_tag(base_ov, alt="baseline+ROI", title=f"Baseline: {base_name}")}'
                         f'<figcaption>Baseline<br><small>ROI 박스 오버레이</small><br>'
-                        f'<code>{Path(case["baseline"]).name}</code></figcaption></figure>'
+                        f'<code>{base_name}</code></figcaption></figure>'
                     )
                     curr_fig = (
                         f'<figure>'
-                        f'<img src="data:image/png;base64,{curr_ov}" alt="current+ROI">'
+                        f'{_img_tag(curr_ov, alt="current+ROI", title=f"Current: {curr_name}")}'
                         f'<figcaption>Current<br><small>ROI 박스 오버레이</small><br>'
-                        f'<code>{Path(case["current"]).name}</code></figcaption></figure>'
+                        f'<code>{curr_name}</code></figcaption></figure>'
                     )
                 else:
                     base_fig = (
                         f'<figure>'
-                        f'<img src="data:{_mime(case["baseline"])};base64,{_b64(case["baseline"])}" alt="baseline">'
-                        f'<figcaption>Baseline<br><code>{Path(case["baseline"]).name}</code></figcaption></figure>'
+                        f'{_img_tag(_b64(case["baseline"]), mime=_mime(case["baseline"]), alt="baseline", title=f"Baseline: {base_name}")}'
+                        f'<figcaption>Baseline<br><code>{base_name}</code></figcaption></figure>'
                     )
                     curr_fig = (
                         f'<figure>'
-                        f'<img src="data:{_mime(case["current"])};base64,{_b64(case["current"])}" alt="current">'
-                        f'<figcaption>Current<br><code>{Path(case["current"]).name}</code></figcaption></figure>'
+                        f'{_img_tag(_b64(case["current"]), mime=_mime(case["current"]), alt="current", title=f"Current: {curr_name}")}'
+                        f'<figcaption>Current<br><code>{curr_name}</code></figcaption></figure>'
                     )
 
                 roi_rows = ''
@@ -723,9 +726,9 @@ def build_html_report(brand_sections: list[dict]) -> str:
                         crop_td = (
                             f'<td><div class="crop-cell">'
                             f'<div class="crop-pair">'
-                            f'<div><img src="data:image/png;base64,{b_crop}" title="Baseline: {rr.name}">'
+                            f'<div>{_img_tag(b_crop, alt=f"Base:{rr.name}", title=f"Baseline: {rr.name}")}'
                             f'<div class="crop-label">Base</div></div>'
-                            f'<div><img src="data:image/png;base64,{c_crop}" title="Current: {rr.name}">'
+                            f'<div>{_img_tag(c_crop, alt=f"Curr:{rr.name}", title=f"Current: {rr.name}")}'
                             f'<div class="crop-label">Curr</div></div>'
                             f'</div>'
                             f'<b style="font-size:12px">{rr.name}</b>'
@@ -739,23 +742,20 @@ def build_html_report(brand_sections: list[dict]) -> str:
                         else:
                             hue_td  = '<td class="ocr-na">—</td>'
 
-                        # OCR 열
-                        if rr.ocr_expected is not None:
+                        # OCR 열 (baseline vs current 비교)
+                        def _ocr_disp(val):
+                            if val is None:
+                                return '<span class="ocr-na">N/A</span>'
+                            if val.strip() == '':
+                                return '<span class="ocr-na">(없음)</span>'
+                            return val.replace('\n', '<br>')
+
+                        if rr.ocr_base is not None or rr.ocr_curr is not None:
                             match_cls  = 'ocr-ok' if not rr.ocr_failed else 'ocr-ng'
                             match_icon = '✅' if not rr.ocr_failed else '❌'
-                            # ocr_expected='' : 팝업/텍스트 없음을 기대 → "(없음)" 표시
-                            exp_disp = rr.ocr_expected if rr.ocr_expected else '<span class="ocr-na">(없음)</span>'
-                            # ocr_text=None : 언어 데이터 없음 (판정 보류)
-                            # ocr_text=''   : OCR이 아무것도 못 읽음 (빈 화면)
-                            if rr.ocr_text is None:
-                                act_disp = '<span class="ocr-na">N/A (언어미설치)</span>'
-                            elif rr.ocr_text == '':
-                                act_disp = '<span class="ocr-na">(없음)</span>'
-                            else:
-                                act_disp = rr.ocr_text
                             ocr_tds = (
-                                f'<td class="rval">{exp_disp}</td>'
-                                f'<td class="rval {match_cls}">{act_disp}</td>'
+                                f'<td class="rval">{_ocr_disp(rr.ocr_base)}</td>'
+                                f'<td class="rval {match_cls}">{_ocr_disp(rr.ocr_curr)}</td>'
                                 f'<td>{match_icon}</td>'
                             )
                         else:
@@ -796,13 +796,15 @@ def build_html_report(brand_sections: list[dict]) -> str:
                 <div class="msg">{r.message}</div>
                 {'''<div class="roi-section">
                   <div class="roi-title">ROI 검사 결과</div>
+                  <div style="overflow-x:auto">
                   <table class="roi-table">
                     <thead><tr>
                       <th>영역 (Base / Curr 크롭)</th><th>SSIM</th><th>Diff</th>
-                      <th>Hue</th><th>OCR 기대</th><th>OCR 실제</th><th>OCR</th><th>결과</th>
+                      <th>Hue</th><th>OCR 기대 (Baseline)</th><th>OCR 실제 (Current)</th><th>OCR</th><th>결과</th>
                     </tr></thead>
                     <tbody>''' + roi_rows + '''</tbody>
                   </table>
+                  </div>
                 </div>''' if roi_rows else ''}
               </div>"""
 
@@ -929,7 +931,24 @@ function filterBrand(brand) {{
   document.getElementById('sc-fail').textContent    = s.fail;
   document.getElementById('sc-total').textContent   = s.total;
 }}
+function lb(src, title) {{
+  document.getElementById('lb-img').src = src;
+  document.getElementById('lb-cap').textContent = title || '';
+  document.getElementById('lb').style.display = 'flex';
+}}
+document.addEventListener('keydown', function(e) {{
+  if (e.key === 'Escape') document.getElementById('lb').style.display = 'none';
+}});
 </script>
+<!-- 라이트박스 오버레이 -->
+<div id="lb" onclick="this.style.display='none'"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:9999;
+         justify-content:center;align-items:center;flex-direction:column;cursor:zoom-out;">
+  <img id="lb-img" style="max-width:92vw;max-height:88vh;object-fit:contain;
+       border:2px solid #555;border-radius:6px;box-shadow:0 8px 40px #000a">
+  <div id="lb-cap" style="color:#bbb;margin-top:10px;font-size:13px;max-width:90vw;text-align:center"></div>
+  <div style="color:#666;font-size:11px;margin-top:4px">클릭하거나 ESC 로 닫기</div>
+</div>
 </body>
 </html>"""
 
@@ -972,7 +991,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=80)
     _save(img, bd/'g1_base.png'); _save(img, bd/'g1_curr.png')
     r = cmp.compare(p('g1_base.png'), p('g1_curr.png'), diff_output=p('g1_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     gauge_cases.append({'name': 'PNG 동일', 'baseline': p('g1_base.png'), 'current': p('g1_curr.png'), 'result': r})
 
@@ -981,7 +1000,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=80),  bd/'g2_base.png')
     _save(make_cluster_image(brand, speed=120), bd/'g2_curr.png')
     r = cmp.compare(p('g2_base.png'), p('g2_curr.png'), diff_output=p('g2_diff.png'),
-                    rois=_rois(brand, speed=80))  # 기대값=80, 실제=120 → OCR FAIL
+                    rois=_rois(brand))  # baseline OCR=80, current OCR=120 → 불일치 FAIL
     _print_result(r)
     gauge_cases.append({'name': 'PNG 속도 변화\n(80 → 120)', 'baseline': p('g2_base.png'), 'current': p('g2_curr.png'), 'result': r})
 
@@ -990,7 +1009,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=60)
     _save(img, bd/'g3_base.jpg', quality=95); _save(img, bd/'g3_curr.jpg', quality=70)
     r = cmp.compare(p('g3_base.jpg'), p('g3_curr.jpg'), diff_output=p('g3_diff.png'),
-                    rois=_rois(brand, speed=60))  # 동일 내용 → OCR PASS
+                    rois=_rois(brand))  # 동일 내용 → baseline=current=60 → PASS
     _print_result(r)
     gauge_cases.append({'name': 'JPG 압축률 차이\n(Q=95 vs Q=70)',
                         'desc': 'JPG perceptual 모드로 PASS — 압축 아티팩트에도 OCR은 속도=60 정확히 인식',
@@ -1001,7 +1020,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=80), bd/'g4_base.jpg', quality=90)
     _save(make_cluster_image(brand, speed=90), bd/'g4_curr.jpg', quality=90)
     r = cmp.compare(p('g4_base.jpg'), p('g4_curr.jpg'), diff_output=p('g4_diff.png'),
-                    rois=_rois(brand, speed=80))  # 기대값=80, 실제=90 → OCR FAIL
+                    rois=_rois(brand))  # baseline OCR=80, current OCR=90 → 불일치 FAIL
     _print_result(r)
     gauge_cases.append({'name': 'JPG 미세 속도 변화\n(80 → 90)',
                         'desc': '전체 SSIM은 높지만 속도 ROI + OCR에서 변화 감지 → FAIL',
@@ -1023,7 +1042,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=80)
     _save(img, bd/'g6_base.jpg', quality=90); _save(img, bd/'g6_curr.jpg', quality=90)
     r = cmp.compare(p('g6_base.jpg'), p('g6_curr.jpg'), diff_output=p('g6_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     gauge_cases.append({'name': 'OCR 속도 검증\n(80 → 80, PASS 기대)',
                         'desc': 'OCR로 속도 숫자를 직접 읽어 기대값(80)과 비교 — 동일하므로 PASS',
@@ -1034,7 +1053,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=80), bd/'g7_base.jpg', quality=90)
     _save(make_cluster_image(brand, speed=60), bd/'g7_curr.jpg', quality=90)
     r = cmp.compare(p('g7_base.jpg'), p('g7_curr.jpg'), diff_output=p('g7_diff.png'),
-                    rois=_rois(brand, speed=80))  # 기대값=80, 실제=60 → OCR FAIL
+                    rois=_rois(brand))  # baseline OCR=80, current OCR=60 → 불일치 FAIL
     _print_result(r)
     gauge_cases.append({'name': 'OCR 속도 검증\n(80 → 60, FAIL 기대)',
                         'desc': 'OCR 기대값=80, 실제=60 — 숫자가 달라 FAIL\nSSIM만으로는 놓칠 수 있는 케이스를 OCR이 정확히 잡아냄',
@@ -1049,7 +1068,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=70)
     _save(img, bd/'p1_base.jpg', quality=90); _save(img, bd/'p1_curr.jpg', quality=90)
     r = cmp.compare(p('p1_base.jpg'), p('p1_curr.jpg'), diff_output=p('p1_diff.png'),
-                    rois=_rois(brand, speed=70, popup_title=''))  # 팝업 없음 기대
+                    rois=_rois(brand, popup_ocr=True))
     _print_result(r)
     popup_cases.append({'name': 'JPG 팝업 없음 (동일)', 'baseline': p('p1_base.jpg'), 'current': p('p1_curr.jpg'), 'result': r})
 
@@ -1059,7 +1078,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'}),
           bd/'p2_curr.jpg', quality=90)
     r = cmp.compare(p('p2_base.jpg'), p('p2_curr.jpg'), diff_output=p('p2_diff.png'),
-                    rois=_rois(brand, speed=70, popup_title='오일 교환 필요'))
+                    rois=_rois(brand, popup_ocr=True))
     _print_result(r)
     popup_cases.append({'name': 'JPG 팝업 등장\n(warning: 오일 교환 필요)',
                         'desc': '팝업 없음 → warning 팝업 등장 — SSIM FAIL + OCR로 팝업 텍스트 내용 확인',
@@ -1072,7 +1091,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=70, popup={'title':'차량 점검 필요','body':'가까운 정비소 방문','type':'error'}),
           bd/'p3_curr.jpg', quality=90)
     r = cmp.compare(p('p3_base.jpg'), p('p3_curr.jpg'), diff_output=p('p3_diff.png'),
-                    rois=_rois(brand, speed=70, popup_title='차량 점검 필요'))
+                    rois=_rois(brand, popup_ocr=True))
     _print_result(r)
     popup_cases.append({'name': 'JPG 팝업 종류 변경\n(warning → error)',
                         'desc': '팝업 타입 변경 → SSIM FAIL + OCR로 변경된 텍스트 내용 확인',
@@ -1083,7 +1102,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=70, popup={'title':'오일 교환 필요','body':'주행 5,000km 초과','type':'warning'})
     _save(img, bd/'p4_base.jpg', quality=90); _save(img, bd/'p4_curr.jpg', quality=90)
     r = cmp.compare(p('p4_base.jpg'), p('p4_curr.jpg'), diff_output=p('p4_diff.png'),
-                    rois=_rois(brand, speed=70, popup_title='오일 교환 필요'))
+                    rois=_rois(brand, popup_ocr=True))
     _print_result(r)
     popup_cases.append({'name': 'JPG 동일 팝업\n(warning 상태, 동일)',
                         'desc': '팝업 켜진 상태에서 동일 비교 — SSIM PASS + OCR로 팝업 텍스트 동일 확인',
@@ -1097,7 +1116,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
           bd/'p5_curr.jpg', quality=90)
     # 기대값='오일 교환 필요', 실제='타이어 공기압 부족' → OCR FAIL
     r = cmp.compare(p('p5_base.jpg'), p('p5_curr.jpg'), diff_output=p('p5_diff.png'),
-                    rois=_rois(brand, speed=70, popup_title='오일 교환 필요'))
+                    rois=_rois(brand, popup_ocr=True))
     _print_result(r)
     popup_cases.append({'name': 'JPG 팝업 텍스트 변경\n(오일 → 타이어 공기압)',
                         'desc': ('팝업 타입·구조는 같지만 메시지 내용이 다름\n'
@@ -1113,7 +1132,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=80, telltales=ALL_OFF.copy())
     _save(img, bd/'t1_base.jpg', quality=90); _save(img, bd/'t1_curr.jpg', quality=90)
     r = cmp.compare(p('t1_base.jpg'), p('t1_curr.jpg'), diff_output=p('t1_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     telltale_cases.append({'name': 'JPG 텔테일 모두 off (동일)',
                            'baseline': p('t1_base.jpg'), 'current': p('t1_curr.jpg'), 'result': r})
@@ -1124,7 +1143,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'engine':True, 'oil':True}),
           bd/'t2_curr.jpg', quality=90)
     r = cmp.compare(p('t2_base.jpg'), p('t2_curr.jpg'), diff_output=p('t2_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     telltale_cases.append({'name': 'JPG ENG + OIL 켜짐',
                            'desc': '텔테일 ROI에서 변화 감지 → FAIL',
@@ -1137,7 +1156,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
                               telltales={**ALL_OFF, 'battery':True,'door':True,'temp':True,'seatbelt':True}),
           bd/'t3_curr.jpg', quality=90)
     r = cmp.compare(p('t3_base.jpg'), p('t3_curr.jpg'), diff_output=p('t3_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     telltale_cases.append({'name': 'JPG BAT+DOOR+TEMP+SBT 켜짐',
                            'baseline': p('t3_base.jpg'), 'current': p('t3_curr.jpg'), 'result': r})
@@ -1147,7 +1166,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     img = make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'engine':True, 'oil':True})
     _save(img, bd/'t4_base.jpg', quality=90); _save(img, bd/'t4_curr.jpg', quality=90)
     r = cmp.compare(p('t4_base.jpg'), p('t4_curr.jpg'), diff_output=p('t4_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     telltale_cases.append({'name': 'JPG 동일 텔테일 활성\n(ENG+OIL 켜진 상태, 동일)',
                            'desc': '텔테일 켜진 상태에서 동일 비교 — False Positive 없이 PASS 기대',
@@ -1160,7 +1179,7 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     _save(make_cluster_image(brand, speed=80, telltales={**ALL_OFF, 'fuel':True}),
           bd/'t5_curr.jpg', quality=90)
     r = cmp.compare(p('t5_base.jpg'), p('t5_curr.jpg'), diff_output=p('t5_diff.png'),
-                    rois=_rois(brand, speed=80))
+                    rois=_rois(brand))
     _print_result(r)
     telltale_cases.append({'name': 'JPG 텔테일 패턴 교체\n(ENG → FUEL, 켜진 수 동일)',
                            'desc': '켜진 수(1개)는 같지만 종류가 다름 — 패턴 차이를 감지해야 FAIL',
