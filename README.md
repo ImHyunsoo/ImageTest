@@ -52,8 +52,10 @@ ROI 영역:   포맷에 맞는 엄격 기준 적용
 경고등 색상 전환(녹색 → 주황/빨강 등)처럼 **컬러 변화**를 Hue 각도 차이로 감지합니다.
 
 ```python
-ROI(name='엔진경고등', x=50, y=10, width=60, height=38, color_check=True)
+ROI(name='텔테일 표시줄', x=0, y=0, width=480, height=48,
+    strict=True, color_check=True)
 # Hue 차이 ≥ 20° 이면 색상 변화로 FAIL
+# 예: 텔테일 OFF→ON 시 hue_diff ≈ 36°, 여러 경고등 시 ≈ 66°
 ```
 
 #### ④ OCR 텍스트 검증 — baseline vs current 비교 방식
@@ -284,15 +286,16 @@ for r in result.roi_results:
 
 ### ⚠️ 텔테일 테스트 (5케이스)
 
-| 케이스 | 설명 | 기대 결과 | OCR |
-|--------|------|----------|-----|
-| T-1 | JPG 텔테일 모두 off, 동일 | ✅ PASS | 속도=80 확인 |
-| T-2 | JPG 텔테일 없음 → ENG + OIL 켜짐 | ❌ FAIL | 속도=80 확인 |
-| T-3 | JPG 텔테일 없음 → BAT + DOOR + TEMP + SBT 켜짐 | ❌ FAIL | 속도=80 확인 |
-| T-4 | JPG 동일 텔테일 켜진 상태에서 비교 | ✅ PASS | 속도=80 확인 |
-| T-5 | JPG 텔테일 패턴 교체 (ENG → FUEL, 켜진 수는 동일) | ❌ FAIL | 속도=80 확인 |
+| 케이스 | 설명 | 기대 결과 | OCR | Hue |
+|--------|------|----------|-----|-----|
+| T-1 | JPG 텔테일 모두 off, 동일 | ✅ PASS | 속도 확인 | 0° (변화 없음) |
+| T-2 | JPG 텔테일 없음 → ENG + OIL 켜짐 | ❌ FAIL | 속도 확인 | ~36° FAIL |
+| T-3 | JPG 텔테일 없음 → BAT + DOOR + TEMP + SBT 켜짐 | ❌ FAIL | 속도 확인 | ~66° FAIL |
+| T-4 | JPG 동일 텔테일 켜진 상태에서 비교 | ✅ PASS | 속도 확인 | 0° (변화 없음) |
+| T-5 | JPG 텔테일 패턴 교체 (ENG → FUEL, 켜진 수는 동일) | ❌ FAIL | 속도 확인 | ~38° FAIL |
 
-> **T-5 핵심 포인트**: 켜진 경고등 수가 같아도 종류가 다르면 FAIL.
+> **T-5 핵심 포인트**: 켜진 경고등 수가 같아도 종류가 다르면 SSIM + Hue 모두 FAIL.
+> **Hue 임계값**: 20° 초과 시 색상 변화로 판정. 경고등 ON 시 30–70° 수준으로 감지됨.
 
 ---
 
@@ -313,6 +316,7 @@ for r in result.roi_results:
   • SSIM 계산                 각 ROI마다:
   • 픽셀 diff % 계산           • SSIM + diff 계산 (포맷 엄격 기준)
   • diff 이미지 저장           • color_check → HSV Hue diff
+                               • color_check → HSV Hue diff (경고등 색상 변화)
                                • ocr=True → baseline/current 양쪽 OCR 후 비교
          │                      │
          └──────────┬───────────┘
@@ -338,7 +342,21 @@ for r in result.roi_results:
 
 ---
 
-## 10. OCR 한계 및 설계 방침
+## 10. 리포트 컬럼 안내
+
+| 컬럼 | 의미 | "—" 표시 조건 |
+|------|------|--------------|
+| HUE | HSV Hue 평균 차이(도) + 임계값 초과 여부 | `color_check=False` 인 ROI |
+| OCR 기대 (Baseline) | baseline 이미지에서 OCR로 읽은 텍스트 | `ocr=False` 인 ROI |
+| OCR 실제 (Current) | current 이미지에서 OCR로 읽은 텍스트 | `ocr=False` 인 ROI |
+| OCR | baseline == current 일치 여부 (✅/❌) | `ocr=False` 인 ROI |
+
+> 텔테일·속도·배터리 ROI처럼 `ocr=False`인 행은 OCR 컬럼이 "—" 로 표시되는 것이 정상입니다.
+> 마찬가지로 `color_check=False`인 ROI는 HUE 컬럼이 "—" 입니다.
+
+---
+
+## 11. OCR 한계 및 설계 방침
 
 대시보드 이미지의 OCR은 완벽하지 않습니다. 아래 요인으로 인해 텍스트가 일부 잘못 읽힐 수 있습니다.
 
@@ -357,7 +375,7 @@ for r in result.roi_results:
 
 ---
 
-## 11. 고객 설명용 한 줄 요약
+## 12. 고객 설명용 한 줄 요약
 
 > "PNG는 무손실이라 픽셀 완전 일치 비교가 가능하지만, JPG는 손실 압축 특성상 같은 이미지라도 저장할 때마다 픽셀이 달라집니다.
 > 그래서 JPG는 시각적 유사도(SSIM) 기반으로 비교하고, 속도 숫자·경고등·팝업처럼 핵심 영역은 포맷에 관계없이 별도로 엄격하게 검사하며,

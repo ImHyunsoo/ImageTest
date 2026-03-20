@@ -87,19 +87,19 @@ GEAR_LABELS = {'D': 'DRIVE', 'R': 'REVERSE', 'N': 'NEUTRAL', 'P': 'PARK'}
 
 BRAND_ROIS = {
     'tesla': [
-        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True, color_check=True),
         ROI(name='속도 표시',       x=158, y=52,  width=164, height=120, strict=True),
         ROI(name='배터리/주행거리', x=322, y=52,  width=155, height=140, strict=False),
         ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
     ],
     'hyundai': [
-        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True, color_check=True),
         ROI(name='속도 표시',       x=155, y=52,  width=168, height=118, strict=True),
         ROI(name='배터리/주행거리', x=318, y=52,  width=160, height=140, strict=False),
         ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
     ],
     'kia': [
-        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True),
+        ROI(name='텔테일 표시줄',   x=0,   y=0,   width=480, height=48,  strict=True, color_check=True),
         ROI(name='속도 표시',       x=30,  y=58,  width=178, height=110, strict=True),
         ROI(name='배터리/주행거리', x=240, y=52,  width=238, height=140, strict=False),
         ROI(name='팝업 영역',       x=0,   y=210, width=480, height=60,  strict=True),
