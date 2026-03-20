@@ -9,6 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write       # JUnit 결과를 Actions 탭에 표시하기 위한 권한
+      contents: read      # 코드 읽기 권한
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Node.js 20 deprecation 경고 해소
 
     steps:
       - name: Checkout code
