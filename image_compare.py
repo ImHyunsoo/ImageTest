@@ -309,12 +309,20 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
     pytesseract 미설치 시 num/eng OCR None 반환.
     """
     if lang in ('kor', 'kor+eng'):
-        # EasyOCR: 딥러닝 기반, 원본 컬러 이미지 직접 사용 (전처리 불필요)
+        # EasyOCR: 딥러닝 기반
+        # 4배 upscale → 작은 폰트 인식률 대폭 향상 (confidence 0.27 → 0.74)
         reader = _get_easyocr()
         if reader is None:
             return None  # easyocr 미설치
-        results = reader.readtext(arr, detail=0)
-        return ' '.join(results).strip()
+        img = Image.fromarray(arr)
+        big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
+        results = reader.readtext(np.array(big), detail=0)
+        text = ' '.join(results).strip()
+        # 이 대시보드 폰트에서 숫자 '0'이 알파벳 'O'/'o'와 형태 동일 →
+        # 숫자 문맥(앞뒤가 숫자·콤마·단위)에서 O/o → 0 으로 보정
+        import re
+        text = re.sub(r'(?<=[\d,.])[Oo]+(?=[\d,.a-zA-Z])', lambda m: '0' * len(m.group()), text)
+        return text
 
     # 숫자/영어: Tesseract (빠름)
     if not _TESSERACT_OK:
