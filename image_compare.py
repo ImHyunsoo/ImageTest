@@ -282,14 +282,16 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
     """
     이미지 배열에서 텍스트를 OCR로 읽습니다.
 
-    전처리: 4배 upscale → grayscale → invert → threshold
-      threshold=80  : 흰색 숫자 전용 (어두운 배경, 밝은 텍스트)
-      threshold=160 : 컬러 텍스트 전용 (배경=240+→흰색, 컬러텍스트=80~150→검정)
+    lang='num':
+      전처리: 4배 upscale → grayscale → invert → threshold=80
+      어두운 배경에 흰색/밝은 숫자 전용
 
-    lang='num'     : 숫자 전용 whitelist, psm=6 (psm=8 fallback)
-    lang='kor'     : 한국어 OCR (tesseract-ocr-kor 필요), psm=6
-    lang='kor+eng' : 한국어+영문 혼합 OCR (숫자·단위 포함 텍스트), psm=6
-    lang='eng'     : 영어 OCR, psm=6
+    lang='kor' / 'kor+eng':
+      전처리: 4배 upscale → R채널 추출 → threshold=80 → invert
+      R채널(>80)이 텍스트를 포함 — 주황·빨강·흰색 텍스트 모두 대응.
+      어두운 배경(R≈20)은 제외되고 텍스트(R>80)만 검정으로 추출됨.
+
+    lang='eng': 기본 invert+threshold
 
     언어 데이터 미설치 시 None 반환 (판정 보류, FAIL로 처리하지 않음).
     pytesseract 미설치 시 None 반환.
@@ -298,29 +300,35 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
         return None
     img = Image.fromarray(arr)
     big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
-    inverted = ImageOps.invert(big.convert('L'))
-    thresholded = np.where(np.array(inverted) > threshold, 255, 0).astype(np.uint8)
-    processed = Image.fromarray(thresholded)
 
-    if lang == 'num':
-        # psm=6: 균일한 텍스트 블록 — 숫자 한 줄에 가장 안정적
-        text = pytesseract.image_to_string(
-            processed, config='--psm 6 -c tessedit_char_whitelist=0123456789'
-        ).strip()
-        if not text:  # 단일 문자('0' 등) 는 psm=8 로 재시도
-            text = pytesseract.image_to_string(
-                processed, config='--psm 8 -c tessedit_char_whitelist=0123456789'
-            ).strip()
-        return text
-    elif lang in ('kor', 'kor+eng'):
+    if lang in ('kor', 'kor+eng'):
+        # R채널 기반 전처리: 주황/빨강/흰색 텍스트를 어두운 배경에서 분리
+        # R > 80 인 픽셀 = 텍스트, 나머지 = 배경(R≈20)
+        r_channel = np.array(big)[:, :, 0]
+        mask = np.where(r_channel > 80, 0, 255).astype(np.uint8)  # 텍스트=검정
+        processed = Image.fromarray(mask)
         try:
             return pytesseract.image_to_string(
                 processed, config=f'--psm 6 --oem 1 -l {lang}'
             ).strip()
         except Exception:
             return None  # tesseract-ocr-kor 미설치
-    else:  # eng
-        return pytesseract.image_to_string(processed, config='--psm 6').strip()
+    else:
+        # 숫자/영어: grayscale invert + threshold
+        inverted = ImageOps.invert(big.convert('L'))
+        thresholded = np.where(np.array(inverted) > threshold, 255, 0).astype(np.uint8)
+        processed = Image.fromarray(thresholded)
+        if lang == 'num':
+            text = pytesseract.image_to_string(
+                processed, config='--psm 6 -c tessedit_char_whitelist=0123456789'
+            ).strip()
+            if not text:
+                text = pytesseract.image_to_string(
+                    processed, config='--psm 8 -c tessedit_char_whitelist=0123456789'
+                ).strip()
+            return text
+        else:  # eng
+            return pytesseract.image_to_string(processed, config='--psm 6').strip()
 
 
 def _apply_masks(arr: np.ndarray, masks: list, reference: np.ndarray) -> np.ndarray:
