@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import io
 import json
 import math
+import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +37,7 @@ ACTIVE_BRAND = 'all'
 
 OUT = Path('demo_output')
 OUT.mkdir(exist_ok=True)
+HISTORY_FILE = OUT / '.history.json'
 
 FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
@@ -547,6 +551,247 @@ def _rois(brand: str, *, popup_ocr: bool = False) -> list[ROI]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# JUnit XML 내보내기 (CI/CD 연동)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def export_junit_xml(brand_sections: list[dict], path: str, elapsed: float = 0.0):
+    """
+    JUnit XML 포맷으로 테스트 결과 내보냅니다.
+
+    Jenkins, GitHub Actions, GitLab CI 등 CI 도구에서 바로 읽을 수 있습니다.
+    FAIL 케이스에는 <failure> 요소로 SSIM/OCR/Hue 상세 메시지가 포함됩니다.
+    """
+    all_cases = [c for bs in brand_sections for cat in bs['categories'] for c in cat['cases']]
+    total    = len(all_cases)
+    failures = sum(1 for c in all_cases if c['result'].status == 'FAIL')
+
+    root = ET.Element('testsuites', {
+        'name':     '클러스터 이미지 비교',
+        'tests':    str(total),
+        'failures': str(failures),
+        'time':     f'{elapsed:.2f}',
+    })
+
+    for bs in brand_sections:
+        brand      = bs['brand']
+        brand_cases = [c for cat in bs['categories'] for c in cat['cases']]
+        suite_fail  = sum(1 for c in brand_cases if c['result'].status == 'FAIL')
+        suite = ET.SubElement(root, 'testsuite', {
+            'name':     brand,
+            'tests':    str(len(brand_cases)),
+            'failures': str(suite_fail),
+            'time':     '0',
+        })
+        for cat in bs['categories']:
+            for case in cat['cases']:
+                r: CompareResult = case['result']
+                tc = ET.SubElement(suite, 'testcase', {
+                    'name':      f'{cat["name"]} > {case["name"].replace(chr(10), " ")}',
+                    'classname': f'{brand}.{cat["name"]}',
+                    'time':      '0',
+                })
+                if r.status == 'FAIL':
+                    details = f'SSIM={r.ssim_score:.4f}, diff={r.diff_pct:.3f}%\n'
+                    for rr in r.roi_results:
+                        if not rr.passed:
+                            details += f'  ROI [{rr.name}]: SSIM={rr.ssim}, diff={rr.diff_pct}%'
+                            if rr.color_failed:
+                                details += f', Hue={rr.hue_diff:.1f}°'
+                            if rr.ocr_failed:
+                                details += f', OCR base={repr(rr.ocr_base)} curr={repr(rr.ocr_curr)}'
+                            details += '\n'
+                    ET.SubElement(tc, 'failure', {
+                        'message': r.message,
+                        'type':    'ImageMismatch',
+                    }).text = details
+                elif r.status == 'SIMILAR_PASS':
+                    ET.SubElement(tc, 'system-out').text = r.message
+
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space='  ')
+    tree.write(path, encoding='UTF-8', xml_declaration=True)
+    print(f'JUnit XML → {path}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 테스트 히스토리 (최근 N회 결과 저장 → 트렌드 표시)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_history() -> list[dict]:
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            return []
+    return []
+
+
+def _save_history(brand_sections: list[dict]) -> list[dict]:
+    """
+    현재 실행 결과를 히스토리 파일(.history.json)에 추가합니다.
+    최대 20회 분량을 유지합니다.
+    """
+    history = _load_history()
+    all_cases = [c for bs in brand_sections for cat in bs['categories'] for c in cat['cases']]
+    entry: dict = {
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'brands': {},
+        'total': {
+            'pass':    sum(1 for c in all_cases if c['result'].status == 'PASS'),
+            'similar': sum(1 for c in all_cases if c['result'].status == 'SIMILAR_PASS'),
+            'fail':    sum(1 for c in all_cases if c['result'].status == 'FAIL'),
+            'total':   len(all_cases),
+        },
+    }
+    for bs in brand_sections:
+        bc = [c for cat in bs['categories'] for c in cat['cases']]
+        entry['brands'][bs['brand']] = {
+            'pass':    sum(1 for c in bc if c['result'].status == 'PASS'),
+            'similar': sum(1 for c in bc if c['result'].status == 'SIMILAR_PASS'),
+            'fail':    sum(1 for c in bc if c['result'].status == 'FAIL'),
+            'total':   len(bc),
+        }
+    history.append(entry)
+    history = history[-20:]  # 최대 20개 유지
+    HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
+    return history
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YAML / JSON 설정 파일 기반 테스트 (비개발자용)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_test_config(path: str) -> dict:
+    """
+    YAML 또는 JSON 테스트 설정 파일을 로드합니다.
+
+    YAML 형식 (권장, 비개발자 친화적):
+      pip install pyyaml 필요
+
+    JSON 형식:
+      PyYAML 없이도 동작합니다.
+    """
+    content = Path(path).read_text(encoding='utf-8')
+    if Path(path).suffix.lower() in ('.yaml', '.yml'):
+        try:
+            import yaml                          # type: ignore
+            return yaml.safe_load(content)
+        except ImportError:
+            raise ImportError(
+                'YAML 설정 파일 사용에는 PyYAML이 필요합니다:\n'
+                '  pip install pyyaml'
+            )
+    return json.loads(content)
+
+
+def _cfg_to_rois(rois_cfg: list[dict]) -> list[ROI]:
+    """설정 파일의 ROI 목록 → ROI 객체 리스트"""
+    result = []
+    for r in (rois_cfg or []):
+        result.append(ROI(
+            name=r['name'],
+            x=int(r['x']),
+            y=int(r['y']),
+            width=int(r['width']),
+            height=int(r['height']),
+            strict=bool(r.get('strict', True)),
+            color_check=bool(r.get('color_check', False)),
+            ocr=bool(r.get('ocr', False)),
+            ocr_lang=str(r.get('ocr_lang', 'num')),
+            ocr_threshold=int(r.get('ocr_threshold', 80)),
+        ))
+    return result
+
+
+def run_from_config(
+    config_path: str,
+    junit_path: Optional[str] = None,
+    out_report: Optional[str] = None,
+) -> list[dict]:
+    """
+    YAML / JSON 설정 파일 기반 테스트를 실행합니다.
+
+    설정 파일 예시 (tests.yaml):
+      cases:
+        - name: "속도 표시 검증"
+          brand: tesla
+          baseline: screenshots/base.png
+          current:  screenshots/curr.png
+          expected: PASS     # 선택 사항 — 리포트에 기대 결과 표시
+          rois:
+            - name: 속도
+              x: 158  y: 52  width: 164  height: 120
+              strict: true
+            - name: 속도(OCR)
+              x: 145  y: 70  width: 195  height: 95
+              ocr: true
+
+    Args:
+        config_path: YAML 또는 JSON 설정 파일 경로
+        junit_path:  JUnit XML 출력 경로 (None 이면 저장 안 함)
+        out_report:  HTML 리포트 출력 경로 (None 이면 demo_output/report_config.html)
+    """
+    cfg = _load_test_config(config_path)
+    cmp = ImageComparator()
+
+    # brand 별로 cases 묶기
+    brand_cases: dict[str, list] = {}
+    t0 = time.monotonic()
+
+    for case_cfg in cfg.get('cases', []):
+        brand    = case_cfg.get('brand', 'custom')
+        name     = case_cfg['name']
+        baseline = case_cfg['baseline']
+        current  = case_cfg['current']
+        rois     = _cfg_to_rois(case_cfg.get('rois', []))
+        # 브랜드 표준 ROI 자동 포함 여부 (기본 False — 설정 파일에서 명시)
+        if case_cfg.get('use_brand_rois') and brand in BRAND_ROIS:
+            rois = list(BRAND_ROIS[brand]) + rois
+
+        diff_out = str(OUT / f'diff_{Path(baseline).stem}.png')
+        print(f'  [{brand}] {name}')
+        r = cmp.compare(baseline, current, diff_output=diff_out, rois=rois)
+
+        expected = case_cfg.get('expected', '')
+        desc_extra = f'기대: {expected}' if expected else ''
+        brand_cases.setdefault(brand, []).append({
+            'name':     name,
+            'baseline': baseline,
+            'current':  current,
+            'result':   r,
+            'desc':     '\n'.join(filter(None, [case_cfg.get('desc', ''), desc_extra])),
+        })
+
+    elapsed = time.monotonic() - t0
+
+    # brand_sections 조립 (알 수 없는 brand는 tesla 팔레트 유용)
+    brand_sections = []
+    for brand, cases in brand_cases.items():
+        eff_brand = brand if brand in BRAND_STYLE else 'tesla'
+        brand_sections.append({
+            'brand': eff_brand,
+            'categories': [{
+                'name': '설정 파일 테스트',
+                'icon': '📋',
+                'desc': f'설정 파일: {config_path}',
+                'cases': cases,
+            }],
+        })
+
+    history = _save_history(brand_sections)
+    out = out_report or str(OUT / 'report_config.html')
+    Path(out).write_text(
+        build_html_report(brand_sections, history=history), encoding='utf-8'
+    )
+    print(f'\n완료: {out}')
+
+    if junit_path:
+        export_junit_xml(brand_sections, junit_path, elapsed)
+
+    return brand_sections
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HTML 리포트 생성
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -596,7 +841,7 @@ def _roi_crop_b64(img_path: str, rr, scale: int = 3) -> str:
     return _img_to_b64(crop)
 
 
-def build_html_report(brand_sections: list[dict]) -> str:
+def build_html_report(brand_sections: list[dict], history: Optional[list] = None) -> str:
     STATUS = {
         'PASS':         ('✅ PASS',         '#16a34a', '#f0fdf4', '#bbf7d0'),
         'SIMILAR_PASS': ('⚠️ SIMILAR PASS', '#b45309', '#fffbeb', '#fde68a'),
@@ -607,17 +852,24 @@ def build_html_report(brand_sections: list[dict]) -> str:
     pass_n    = sum(1 for c in all_cases if c['result'].status == 'PASS')
     similar_n = sum(1 for c in all_cases if c['result'].status == 'SIMILAR_PASS')
     fail_n    = sum(1 for c in all_cases if c['result'].status == 'FAIL')
+    total_n   = len(all_cases)
+    pass_rate = round((pass_n + similar_n) / total_n * 100) if total_n else 0
 
     # 브랜드별 통계 (탭 전환 시 summary 업데이트용)
-    brand_stats: dict = {'all': {'pass': pass_n, 'similar': similar_n,
-                                  'fail': fail_n, 'total': len(all_cases)}}
+    def _rate(p, s, t): return round((p + s) / t * 100) if t else 0
+    brand_stats: dict = {'all': {
+        'pass': pass_n, 'similar': similar_n, 'fail': fail_n, 'total': total_n,
+        'rate': pass_rate,
+    }}
     for bs in brand_sections:
         bc = [c for cat in bs['categories'] for c in cat['cases']]
+        bp = sum(1 for c in bc if c['result'].status == 'PASS')
+        bs_ = sum(1 for c in bc if c['result'].status == 'SIMILAR_PASS')
+        bf = sum(1 for c in bc if c['result'].status == 'FAIL')
+        bt = len(bc)
         brand_stats[bs['brand']] = {
-            'pass':    sum(1 for c in bc if c['result'].status == 'PASS'),
-            'similar': sum(1 for c in bc if c['result'].status == 'SIMILAR_PASS'),
-            'fail':    sum(1 for c in bc if c['result'].status == 'FAIL'),
-            'total':   len(bc),
+            'pass': bp, 'similar': bs_, 'fail': bf, 'total': bt,
+            'rate': _rate(bp, bs_, bt),
         }
 
     # 브랜드 탭 버튼 HTML 사전 생성
@@ -626,6 +878,34 @@ def build_html_report(brand_sections: list[dict]) -> str:
         bname = bs['brand']
         blabel = BRAND_STYLE[bname]['label'].split()[0]
         _tab_btns += f'<button class="tab-btn" onclick="filterBrand(\'{bname}\')">{blabel}</button>'
+
+    # 히스토리 트렌드 HTML
+    _trend_html = ''
+    if history and len(history) > 1:
+        rows = ''
+        for i, h in enumerate(history[-8:]):          # 최근 8회
+            t = h['total']
+            rate = _rate(t['pass'], t['similar'], t['total'])
+            is_cur = (i == len(history[-8:]) - 1)
+            rate_color = '#16a34a' if rate >= 80 else ('#b45309' if rate >= 60 else '#dc2626')
+            cur_cls = ' style="background:#eff6ff;font-weight:700"' if is_cur else ''
+            rows += (
+                f'<tr{cur_cls}>'
+                f'<td>{h["timestamp"]}{"&nbsp;← 현재" if is_cur else ""}</td>'
+                f'<td style="color:#16a34a">{t["pass"]}</td>'
+                f'<td style="color:#b45309">{t["similar"]}</td>'
+                f'<td style="color:#dc2626">{t["fail"]}</td>'
+                f'<td style="color:{rate_color};font-weight:700">{rate}%</td>'
+                f'</tr>'
+            )
+        _trend_html = f"""
+<div class="trend-wrap">
+  <div class="trend-title">📈 테스트 추이 (최근 {len(history[-8:])}회)</div>
+  <table class="trend-table">
+    <thead><tr><th>실행 시간</th><th>PASS</th><th>SIMILAR</th><th>FAIL</th><th>합격률</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</div>"""
 
     body_html = ''
     case_num  = 0
@@ -890,6 +1170,13 @@ figcaption code{{font-size:10px;color:#94a3b8}}
 .tab-btn.active{{background:#fff;color:#0f172a;box-shadow:0 -2px 0 #3b82f6 inset}}
 .brand-section{{display:block}}
 .brand-section.hidden{{display:none}}
+/* 트렌드 */
+.trend-wrap{{margin:0 40px 24px;background:#fff;border-radius:12px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
+.trend-title{{font-size:13px;font-weight:700;color:#1e293b;margin-bottom:10px}}
+.trend-table{{width:100%;border-collapse:collapse;font-size:12px}}
+.trend-table th{{background:#f1f5f9;color:#64748b;font-weight:600;padding:6px 12px;text-align:left;border-bottom:1px solid #e2e8f0}}
+.trend-table td{{padding:6px 12px;border-bottom:1px solid #f8fafc}}
+.trend-table tr:last-child td{{border-bottom:none}}
 </style>
 </head>
 <body>
@@ -905,8 +1192,10 @@ figcaption code{{font-size:10px;color:#94a3b8}}
   <div class="sc"><div class="n" id="sc-pass" style="color:#16a34a">{pass_n}</div><div class="l">PASS</div></div>
   <div class="sc"><div class="n" id="sc-similar" style="color:#b45309">{similar_n}</div><div class="l">SIMILAR PASS</div></div>
   <div class="sc"><div class="n" id="sc-fail" style="color:#dc2626">{fail_n}</div><div class="l">FAIL</div></div>
-  <div class="sc"><div class="n" id="sc-total">{len(all_cases)}</div><div class="l">전체</div></div>
+  <div class="sc"><div class="n" id="sc-total">{total_n}</div><div class="l">전체</div></div>
+  <div class="sc"><div class="n" id="sc-rate" style="color:{'#16a34a' if pass_rate>=80 else ('#b45309' if pass_rate>=60 else '#dc2626')}">{pass_rate}%</div><div class="l">합격률</div></div>
 </div>
+{_trend_html}
 <div class="strategy">
   <p><b>비교 전략</b></p>
   <p>• <b>PNG</b> &nbsp;무손실 → 엄격 비교 (SSIM ≥ 0.98, diff &lt; 0.1%)</p>
@@ -930,6 +1219,11 @@ function filterBrand(brand) {{
   document.getElementById('sc-similar').textContent = s.similar;
   document.getElementById('sc-fail').textContent    = s.fail;
   document.getElementById('sc-total').textContent   = s.total;
+  const rateEl = document.getElementById('sc-rate');
+  if (rateEl) {{
+    rateEl.textContent = (s.rate ?? 0) + '%';
+    rateEl.style.color = s.rate >= 80 ? '#16a34a' : (s.rate >= 60 ? '#b45309' : '#dc2626');
+  }}
 }}
 function lb(src, title) {{
   document.getElementById('lb-img').src = src;
@@ -1198,30 +1492,67 @@ def run_brand(brand: str, cmp: ImageComparator) -> list[dict]:
     ]
 
 
-def run(active_brand: str = 'all'):
+def run(active_brand: str = 'all',
+        junit_path: Optional[str] = None):
     cmp    = ImageComparator()
     brands = ['tesla', 'hyundai', 'kia'] if active_brand == 'all' else [active_brand]
 
+    t0 = time.monotonic()
     brand_sections = []
     for brand in brands:
         categories = run_brand(brand, cmp)
         brand_sections.append({'brand': brand, 'categories': categories})
+    elapsed = time.monotonic() - t0
+
+    history = _save_history(brand_sections)
 
     print(f'\n{"━"*62}')
     print('HTML 리포트 생성 중...')
     report_path = OUT / 'report.html'
-    report_path.write_text(build_html_report(brand_sections), encoding='utf-8')
+    report_path.write_text(
+        build_html_report(brand_sections, history=history), encoding='utf-8'
+    )
     print(f'\n완료: {report_path.resolve()}')
+
+    if junit_path:
+        export_junit_xml(brand_sections, junit_path, elapsed)
+
     print(f'\n브라우저로 열기: wslview "{report_path.resolve()}"\n')
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='클러스터 이미지 비교 데모')
+    parser = argparse.ArgumentParser(
+        description='클러스터 이미지 비교 데모',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""예시:
+  python demo.py                          # 전체 브랜드 테스트
+  python demo.py --brand tesla            # 테슬라만 테스트
+  python demo.py --junit results.xml      # JUnit XML 함께 출력 (CI/CD)
+  python demo.py --config tests.yaml      # YAML 설정 파일 기반 테스트
+  python demo.py --config tests.json      # JSON 설정 파일 기반 테스트
+        """,
+    )
     parser.add_argument(
         '--brand',
         choices=['tesla', 'hyundai', 'kia', 'all'],
         default=ACTIVE_BRAND,
-        help='테스트할 브랜드 (기본값: ACTIVE_BRAND 설정값)',
+        help='테스트할 브랜드 (기본값: ACTIVE_BRAND 설정값, --config 사용 시 무시)',
+    )
+    parser.add_argument(
+        '--junit', '-j',
+        default=None,
+        metavar='PATH',
+        help='JUnit XML 출력 경로 (예: results.xml) — CI/CD 연동용',
+    )
+    parser.add_argument(
+        '--config', '-c',
+        default=None,
+        metavar='PATH',
+        help='YAML/JSON 테스트 설정 파일 경로 (비개발자 테스트 케이스 정의용)',
     )
     args = parser.parse_args()
-    run(args.brand)
+
+    if args.config:
+        run_from_config(args.config, junit_path=args.junit)
+    else:
+        run(args.brand, junit_path=args.junit)

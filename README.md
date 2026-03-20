@@ -109,6 +109,8 @@ diff 이미지에서 마스크 영역은 파란 오버레이로 표시됩니다.
 | ❌ FAIL | 의미 있는 변경 감지 |
 
 #### ⑦ HTML 리포트
+- **요약 카드**: PASS / SIMILAR / FAIL / 전체 / **합격률 %** — 탭 전환 시 실시간 업데이트
+- **테스트 추이 (히스토리)**: 최근 8회 실행 결과를 표로 표시 (2회 이상 실행 시 노출)
 - **브랜드 탭 필터링**: Tesla / Hyundai / Kia 탭으로 전환
 - **ROI 테이블**: SSIM / Diff / Hue / OCR 기대(Baseline) / OCR 실제(Current) 한눈에 확인
 - **크롭 썸네일**: ROI 영역을 확대한 before/after 이미지
@@ -123,16 +125,19 @@ diff 이미지에서 마스크 영역은 파란 오버레이로 표시됩니다.
 ```
 ImageTest/
 │
-├── image_compare.py   ← 비교 엔진 (핵심 로직)
-├── demo.py            ← 데모 실행 + HTML 리포트 생성
-├── requirements.txt   ← Python 패키지 목록
-├── run.sh             ← 한 번에 설치 + 실행하는 스크립트
+├── image_compare.py     ← 비교 엔진 (핵심 로직)
+├── demo.py              ← 데모 실행 + HTML 리포트 생성
+├── roi_picker.py        ← ROI 좌표 선택 도구 (GUI)
+├── tests_sample.yaml    ← YAML 설정 파일 예시 (비개발자용)
+├── requirements.txt     ← Python 패키지 목록
+├── run.sh               ← 한 번에 설치 + 실행하는 스크립트
 │
-└── demo_output/       ← 데모 실행 시 자동 생성되는 폴더
-    ├── report.html    ← 결과 리포트 (브라우저로 열기)
-    ├── tesla/         ← Tesla 테스트 이미지 + diff
-    ├── hyundai/       ← Hyundai 테스트 이미지 + diff
-    └── kia/           ← Kia 테스트 이미지 + diff
+└── demo_output/         ← 데모 실행 시 자동 생성되는 폴더
+    ├── report.html      ← 결과 리포트 (브라우저로 열기)
+    ├── .history.json    ← 테스트 히스토리 (자동 누적, 최대 20회)
+    ├── tesla/           ← Tesla 테스트 이미지 + diff
+    ├── hyundai/         ← Hyundai 테스트 이미지 + diff
+    └── kia/             ← Kia 테스트 이미지 + diff
 ```
 
 ---
@@ -189,7 +194,33 @@ python demo.py --brand all      # 전체 (기본값)
 
 실행하면 콘솔에 각 케이스 결과가 출력되고 `demo_output/report.html`이 생성됩니다.
 
-### 방법 C — CLI로 직접 이미지 비교
+### 방법 C — CI/CD JUnit XML 출력
+
+```bash
+# JUnit XML 함께 생성 (Jenkins, GitHub Actions, GitLab CI 등)
+python demo.py --junit results.xml
+python demo.py --brand tesla --junit results/tesla.xml
+```
+
+생성된 XML은 CI 도구의 "Test Results" 뷰에서 바로 읽을 수 있습니다.
+
+### 방법 D — YAML/JSON 설정 파일 기반 테스트 (비개발자)
+
+파이썬 코드를 수정하지 않고 YAML 파일만 편집해서 테스트를 정의할 수 있습니다.
+
+```bash
+# 설정 파일 기반 실행
+python demo.py --config tests_sample.yaml
+
+# 설정 파일 + JUnit XML
+python demo.py --config my_tests.yaml --junit results.xml
+```
+
+`tests_sample.yaml`을 복사해서 경로와 케이스를 수정하면 됩니다.
+
+### 방법 E — CLI로 직접 이미지 비교
+
+### 방법 F — CLI로 직접 이미지 비교
 
 ```bash
 # 기본 비교
@@ -210,6 +241,24 @@ python image_compare.py baseline.png current.jpg \
 ```
 
 ROI 형식: `x,y,너비,높이,이름[,color][,ocr]`
+
+### 방법 G — ROI 좌표 선택 도구
+
+이미지를 클릭·드래그해서 ROI 좌표를 선택하는 GUI 도구입니다.
+선택 후 Python 코드 / YAML / CLI 형식을 자동으로 출력합니다.
+
+```bash
+# tkinter 설치 필요 (WSL: sudo apt-get install python3-tk)
+python roi_picker.py demo_output/tesla/g1_base.png
+python roi_picker.py screenshot.png --scale 2   # 작은 이미지 2배 확대
+```
+
+| 조작 | 동작 |
+|------|------|
+| 마우스 드래그 | ROI 사각형 그리기 |
+| Enter / Space | 현재 ROI 확정 (이름 입력 팝업) |
+| Backspace | 마지막 ROI 취소 |
+| Esc / Q | 종료 + 좌표 코드 출력 |
 
 ---
 

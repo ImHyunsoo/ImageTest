@@ -3,3 +3,4 @@ numpy>=1.24.0
 scipy>=1.10.0
 pytesseract>=0.3.10
 easyocr>=1.7.0
+pyyaml>=6.0       # YAML 설정 파일 지원 (tests.yaml --config 옵션)

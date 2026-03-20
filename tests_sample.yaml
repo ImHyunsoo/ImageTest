@@ -1,0 +1,135 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# tests_sample.yaml — 비개발자용 테스트 케이스 설정 파일
+#
+# 사용법:
+#   python demo.py --config tests_sample.yaml
+#   python demo.py --config tests_sample.yaml --junit results.xml
+#
+# ※ 이 파일을 복사해서 실제 스크린샷 경로에 맞게 수정하세요.
+#    파이썬 코드를 전혀 건드리지 않아도 됩니다.
+# ─────────────────────────────────────────────────────────────────────────────
+version: "1.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 각 케이스 공통 필드 설명
+# ─────────────────────────────────────────────────────────────────────────────
+#  name       : 테스트 케이스 이름 (리포트에 표시)
+#  brand      : tesla / hyundai / kia  (리포트 색상·레이아웃 결정)
+#  baseline   : 기준 이미지 경로 (PNG 또는 JPG)
+#  current    : 비교 대상 이미지 경로
+#  expected   : PASS / FAIL  (선택, 리포트에 기대 결과 표시용)
+#  desc       : 케이스 설명 (선택)
+#  use_brand_rois: true 이면 브랜드 표준 ROI 4개(텔테일/속도/배터리/팝업) 자동 포함
+#  rois       : 추가 ROI 목록 (use_brand_rois 와 병용 가능)
+#
+# ROI 필드:
+#  name          : 영역 이름
+#  x, y          : 좌상단 좌표 (픽셀) — roi_picker.py 로 편하게 선택 가능
+#  width, height : 영역 크기 (픽셀)
+#  strict        : true = 픽셀 퍼펙트 기준 / false = 지각적 유사도 기준
+#  color_check   : true = Hue 색상 변화도 감지 (경고등 색상 전환 등)
+#  ocr           : true = 텍스트를 OCR로 읽어 baseline vs current 비교
+#  ocr_lang      : num(숫자) / eng(영어) / kor+eng(한국어+영어, 기본값)
+#  ocr_threshold : OCR 이진화 임계값 (기본 80, 밝은 배경은 160)
+# ─────────────────────────────────────────────────────────────────────────────
+
+cases:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 예시 1: 속도 표시 검증 (기준 이미지 = demo_output/tesla/g1_base.png)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name:     "속도 표시 변화 없음 (PASS 기대)"
+    brand:    tesla
+    baseline: demo_output/tesla/g1_base.png
+    current:  demo_output/tesla/g1_curr.png
+    expected: PASS
+    desc:     "동일한 이미지 → 전체 SSIM + ROI 모두 PASS 기대"
+    rois:
+      - name:   속도 표시
+        x:      158
+        y:      52
+        width:  164
+        height: 120
+        strict: true
+      - name:      속도(OCR)
+        x:         145
+        y:         70
+        width:     195
+        height:    95
+        strict:    false
+        ocr:       true
+        ocr_lang:  num
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 예시 2: 속도 변화 감지 (FAIL 기대)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name:     "속도 변화 감지 (FAIL 기대)"
+    brand:    tesla
+    baseline: demo_output/tesla/g2_base.png
+    current:  demo_output/tesla/g2_curr.png
+    expected: FAIL
+    desc:     "80 km/h → 120 km/h — ROI + OCR 로 변화 감지"
+    rois:
+      - name:     속도(OCR)
+        x:        145
+        y:        70
+        width:    195
+        height:   95
+        strict:   false
+        ocr:      true
+        ocr_lang: num
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 예시 3: 팝업 텍스트 OCR 검증 (Hyundai)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name:     "팝업 텍스트 변경 감지 (FAIL 기대)"
+    brand:    hyundai
+    baseline: demo_output/hyundai/p3_base.jpg
+    current:  demo_output/hyundai/p3_curr.jpg
+    expected: FAIL
+    desc:     "warning → error 팝업 변경 — OCR 로 텍스트 불일치 감지"
+    rois:
+      - name:          팝업 영역
+        x:             0
+        y:             210
+        width:         480
+        height:        60
+        strict:        true
+      - name:          팝업텍스트(OCR)
+        x:             40
+        y:             205
+        width:         390
+        height:        60
+        strict:        false
+        ocr:           true
+        ocr_lang:      kor+eng
+        ocr_threshold: 160
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 예시 4: 텔테일 색상 변화 감지 (color_check)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name:     "텔테일 색상 변화 감지 (FAIL 기대)"
+    brand:    kia
+    baseline: demo_output/kia/t1_base.jpg
+    current:  demo_output/kia/t2_curr.jpg
+    expected: FAIL
+    desc:     "텔테일 OFF → ENG+OIL 켜짐 — Hue 변화로 감지"
+    use_brand_rois: false
+    rois:
+      - name:        텔테일 표시줄
+        x:           0
+        y:           0
+        width:       480
+        height:      48
+        strict:      true
+        color_check: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 실제 스크린샷 사용 예시 (주석 해제 후 경로 수정)
+  # ──────────────────────────────────────────────────────────────────────────
+  # - name:     "실제 캡처 화면 비교"
+  #   brand:    tesla
+  #   baseline: screenshots/cluster_baseline.png
+  #   current:  screenshots/cluster_20260320.png
+  #   expected: PASS
+  #   use_brand_rois: true   # 브랜드 표준 ROI 4개 자동 포함

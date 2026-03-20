@@ -54,6 +54,17 @@ def _get_easyocr():
     return _easyocr_reader
 
 
+# 차량 클러스터 한국어 OCR 오인식 보정 사전
+# 딥러닝 모델이 대시보드 전용 폰트에서 반복적으로 혼동하는 자소 쌍만 등록합니다.
+_KOR_CORRECTIONS: list[tuple[str, str]] = [
+    ('정검',  '점검'),    # 차량점검 필요 (ㅈ+ㅓ+ㅇ vs ㅈ+ㅓ+ㅁ)
+    ('정비스', '정비소'),  # 가까운 정비소 (스 vs 소)
+    ('오잌',  '오일'),    # 오일 교환 (오잌 오인식)
+    ('공기아', '공기압'),  # 타이어 공기압
+    ('초가',  '초과'),    # km 초과
+]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Threshold 설정
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +333,8 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
         # 숫자 문맥(앞뒤가 숫자·콤마·단위)에서 O/o → 0 으로 보정
         import re
         text = re.sub(r'(?<=[\d,.])[Oo]+(?=[\d,.a-zA-Z])', lambda m: '0' * len(m.group()), text)
+        for wrong, right in _KOR_CORRECTIONS:
+            text = text.replace(wrong, right)
         return text
 
     # 숫자/영어: Tesseract (빠름)
