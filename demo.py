@@ -743,9 +743,19 @@ def build_html_report(brand_sections: list[dict]) -> str:
                         if rr.ocr_expected is not None:
                             match_cls  = 'ocr-ok' if not rr.ocr_failed else 'ocr-ng'
                             match_icon = '✅' if not rr.ocr_failed else '❌'
+                            # ocr_expected='' : 팝업/텍스트 없음을 기대 → "(없음)" 표시
+                            exp_disp = rr.ocr_expected if rr.ocr_expected else '<span class="ocr-na">(없음)</span>'
+                            # ocr_text=None : 언어 데이터 없음 (판정 보류)
+                            # ocr_text=''   : OCR이 아무것도 못 읽음 (빈 화면)
+                            if rr.ocr_text is None:
+                                act_disp = '<span class="ocr-na">N/A (언어미설치)</span>'
+                            elif rr.ocr_text == '':
+                                act_disp = '<span class="ocr-na">(없음)</span>'
+                            else:
+                                act_disp = rr.ocr_text
                             ocr_tds = (
-                                f'<td class="rval">{rr.ocr_expected}</td>'
-                                f'<td class="rval {match_cls}">{rr.ocr_text or "—"}</td>'
+                                f'<td class="rval">{exp_disp}</td>'
+                                f'<td class="rval {match_cls}">{act_disp}</td>'
                                 f'<td>{match_icon}</td>'
                             )
                         else:
