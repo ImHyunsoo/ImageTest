@@ -40,6 +40,19 @@ try:
 except ImportError:
     _TESSERACT_OK = False
 
+# EasyOCR: 한국어 텍스트 전용 (kor/kor+eng). 최초 호출 시 지연 초기화.
+_easyocr_reader = None
+
+def _get_easyocr():
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        try:
+            import easyocr
+            _easyocr_reader = easyocr.Reader(['ko', 'en'], gpu=False, verbose=False)
+        except ImportError:
+            pass
+    return _easyocr_reader
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Threshold 설정
@@ -284,51 +297,45 @@ def _ocr_read(arr: np.ndarray, lang: str = 'num', threshold: int = 80) -> Option
 
     lang='num':
       전처리: 4배 upscale → grayscale → invert → threshold=80
-      어두운 배경에 흰색/밝은 숫자 전용
+      어두운 배경에 흰색/밝은 숫자 전용 (Tesseract)
 
     lang='kor' / 'kor+eng':
-      전처리: 4배 upscale → R채널 추출 → threshold=80 → invert
-      R채널(>80)이 텍스트를 포함 — 주황·빨강·흰색 텍스트 모두 대응.
-      어두운 배경(R≈20)은 제외되고 텍스트(R>80)만 검정으로 추출됨.
+      EasyOCR 딥러닝 모델 사용 — 전처리 없이 원본 컬러 이미지 직접 인식.
+      Tesseract 대비 한국어 정확도 대폭 향상.
 
-    lang='eng': 기본 invert+threshold
+    lang='eng': 기본 invert+threshold (Tesseract)
 
-    언어 데이터 미설치 시 None 반환 (판정 보류, FAIL로 처리하지 않음).
-    pytesseract 미설치 시 None 반환.
+    easyocr 미설치 시 None 반환 (판정 보류, FAIL로 처리하지 않음).
+    pytesseract 미설치 시 num/eng OCR None 반환.
     """
+    if lang in ('kor', 'kor+eng'):
+        # EasyOCR: 딥러닝 기반, 원본 컬러 이미지 직접 사용 (전처리 불필요)
+        reader = _get_easyocr()
+        if reader is None:
+            return None  # easyocr 미설치
+        results = reader.readtext(arr, detail=0)
+        return ' '.join(results).strip()
+
+    # 숫자/영어: Tesseract (빠름)
     if not _TESSERACT_OK:
         return None
     img = Image.fromarray(arr)
     big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
-
-    if lang in ('kor', 'kor+eng'):
-        # R채널 기반 전처리: 주황/빨강/흰색 텍스트를 어두운 배경에서 분리
-        # R > 80 인 픽셀 = 텍스트, 나머지 = 배경(R≈20)
-        r_channel = np.array(big)[:, :, 0]
-        mask = np.where(r_channel > 80, 0, 255).astype(np.uint8)  # 텍스트=검정
-        processed = Image.fromarray(mask)
-        try:
-            return pytesseract.image_to_string(
-                processed, config=f'--psm 6 --oem 1 -l {lang}'
-            ).strip()
-        except Exception:
-            return None  # tesseract-ocr-kor 미설치
-    else:
-        # 숫자/영어: grayscale invert + threshold
-        inverted = ImageOps.invert(big.convert('L'))
-        thresholded = np.where(np.array(inverted) > threshold, 255, 0).astype(np.uint8)
-        processed = Image.fromarray(thresholded)
-        if lang == 'num':
+    # grayscale invert + threshold
+    inverted = ImageOps.invert(big.convert('L'))
+    thresholded = np.where(np.array(inverted) > threshold, 255, 0).astype(np.uint8)
+    processed = Image.fromarray(thresholded)
+    if lang == 'num':
+        text = pytesseract.image_to_string(
+            processed, config='--psm 6 -c tessedit_char_whitelist=0123456789'
+        ).strip()
+        if not text:
             text = pytesseract.image_to_string(
-                processed, config='--psm 6 -c tessedit_char_whitelist=0123456789'
+                processed, config='--psm 8 -c tessedit_char_whitelist=0123456789'
             ).strip()
-            if not text:
-                text = pytesseract.image_to_string(
-                    processed, config='--psm 8 -c tessedit_char_whitelist=0123456789'
-                ).strip()
-            return text
-        else:  # eng
-            return pytesseract.image_to_string(processed, config='--psm 6').strip()
+        return text
+    else:  # eng
+        return pytesseract.image_to_string(processed, config='--psm 6').strip()
 
 
 def _apply_masks(arr: np.ndarray, masks: list, reference: np.ndarray) -> np.ndarray:

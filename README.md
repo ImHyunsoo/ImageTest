@@ -79,15 +79,16 @@ ROI(name='팝업텍스트(OCR)', x=40, y=205, width=390, height=60,
     ocr=True, ocr_lang='kor+eng', ocr_threshold=160)
 ```
 
-| `ocr_lang` | 전처리 방식 | 용도 | 필요 패키지 |
-|------------|------------|------|------------|
-| `'num'` (기본) | grayscale invert+threshold | 숫자 전용 (0-9 whitelist) | tesseract-ocr |
-| `'kor'` | **R채널 추출** | 한국어 전용 | tesseract-ocr-kor |
-| `'kor+eng'` | **R채널 추출** | 한국어+영문 혼합 (단위·숫자 포함) | tesseract-ocr-kor |
-| `'eng'` | grayscale invert+threshold | 영어 | tesseract-ocr |
+| `ocr_lang` | OCR 엔진 | 용도 | 필요 패키지 |
+|------------|----------|------|------------|
+| `'num'` (기본) | Tesseract | 숫자 전용 (0-9 whitelist), 빠름 | tesseract-ocr |
+| `'kor'` | **EasyOCR** | 한국어 전용, 딥러닝 기반 | easyocr |
+| `'kor+eng'` | **EasyOCR** | 한국어+영문 혼합 (단위·숫자 포함) | easyocr |
+| `'eng'` | Tesseract | 영어 | tesseract-ocr |
 
-> **R채널 전처리**: R값>80인 픽셀(주황·빨강·흰색 텍스트)을 추출 후 반전(흰배경·검정텍스트).
-> 어두운 대시보드 배경(R≈20)은 자동 제거되며, 경고 색상별(주황/빨강) 구분 없이 동작함.
+> **EasyOCR** (한국어): 딥러닝 기반으로 전처리 없이 원본 컬러 이미지에서 직접 인식.
+> Tesseract 대비 대시보드 특수 폰트·색상 텍스트 인식 정확도 대폭 향상.
+> 최초 호출 시 모델 로딩(~3초), 이후 호출당 ~0.3초. GPU 환경에서 더 빠름.
 
 > 언어 데이터 미설치 시 OCR 결과는 `None`으로 표시되며, 판정에서 제외(FAIL로 처리 안 함)됩니다.
 
@@ -154,7 +155,8 @@ pip install -r requirements.txt
 | Pillow | 이미지 로드, 저장, 그리기 |
 | numpy  | 픽셀 배열 연산 |
 | scipy  | SSIM 계산용 슬라이딩 윈도우 |
-| pytesseract | OCR 텍스트 인식 |
+| pytesseract | 숫자·영어 OCR (Tesseract 래퍼) |
+| easyocr | 한국어 OCR (딥러닝 기반, Tesseract 대비 정확도 향상) |
 
 ### Tesseract 설치 (OCR 기능)
 
@@ -368,7 +370,7 @@ for r in result.roi_results:
 | 대시보드 전용 폰트 | Tesseract 학습 데이터에 없는 굵은 한국어 폰트 → 일부 글자 오인식 |
 | 소형 폰트 | 작은 글씨는 upscale 후에도 획이 뭉개짐 |
 | JPG 압축 아티팩트 | 블록 노이즈가 문자 경계를 흐리게 만듦 |
-| 혼합 텍스트 | 한국어+숫자+영문 단위(km, %) 혼합 (`kor+eng` + R채널로 부분 해결) |
+| 혼합 텍스트 | 한국어+숫자+영문 단위(km, %) 혼합 (`kor+eng` + EasyOCR로 대폭 개선) |
 
 **설계 방침**: OCR 결과가 완벽하지 않아도 **같은 이미지는 항상 같은(일관된) 결과**를 냅니다.
 따라서 "baseline OCR == current OCR" 비교 판정은 올바르게 동작합니다.
